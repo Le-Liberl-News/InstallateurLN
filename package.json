@@ -1,0 +1,63 @@
+{
+  "name": "setupliberlnews",
+  "version": "1.0.2",
+  "description": "Installateur de patchs pour l'équipe du Liberl News",
+  "main": "index.js",
+  "bin": "./index.js",
+  "scripts": {
+    "test": "test",
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "author": "Schneitizel S. Sekai",
+  "license": "ISC",
+  "devDependencies": {
+	"electron": "22.3.27",
+    "electron-builder": "^24.12.0",
+    "electron-packager": "^17.1.2"
+  },
+  "dependencies": {
+    "@electron/remote": "^2.0.1",
+    "bluebird": "^3.7.2",
+    "jquery": "^3.7.1",
+    "node-fetch": "^2.6.7",
+    "node-stream-zip": "^1.15.0",
+    "regedit": "^5.1.3",
+    "svg-pan-zoom": "^3.6.1",
+    "yauzl": "^2.10.0"
+  },
+  "build": {
+    "appId": "com.liberlnews.installer",
+    "productName": "Installateur du Liberl News",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "index.js",
+      "functions.js",
+      "vdf.js",
+      "loading.html",
+      "jquery.min.js",
+      "config.json",
+      "doc/*",
+      "css/*",
+      "audio/**/*",
+      "images/**/*",
+      "index.html"
+    ],
+    "portable": {
+      "useZip": true,
+      "splashImage": "./images/splash.bmp"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  }
+}
