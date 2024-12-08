@@ -126,12 +126,12 @@ async function loadConfig()
 {
     config = require("./config.json");
     if(config["useOnlineConfig"]) // Si useOnlineConfig, on utilise 
-        config = await getFetch('https://raw.githubusercontent.com/Schneitizel/SetupLiberlNews/main/config.json', 'GET', {}, true);
+        config = await getFetch('https://twnkek290001-s3.fhmutu.net/config.json', 'GET', {}, true);
 
     if(fs.existsSync('./projects.json') && !config["useOnlineConfig"]) // Si le fichier projects.json existe dans le répertoire de l'appli ET qu'on se sert des fichiers locaux, on l'utilise
         projectsList = require("./projects.json");
     else // Sinon, on va chercher celui en ligne !
-        projectsList = await getFetch('https://raw.githubusercontent.com/Schneitizel/SetupLiberlNews/main/projects.json', 'GET', {}, true);
+        projectsList = await getFetch('https://twnkek290001-s3.fhmutu.net/projects.json', 'GET', {}, true);
 
     return 1;
 }
@@ -227,7 +227,6 @@ function openProject(type = "trails", id = "Sky", game = 0)
 	soit les voix sont installées mais pas le patch => on installe le patch
 	soit le patch est installé mais pas les voix, mais la case est cocheé => on installe les voix
 	si y a un problème à un quelconque moment l'utilisateur peut cliquer sur un bouton désinstaller qui va enlever voix et patch (table rase). ensuite il pourra cocher la case des voix et installer et ça lui donnera voix et patch*/
-    console.log("a");
 	onChangePath();
 	updateCurrentState(); // on actualise l'état
 	updateGUI();
@@ -244,7 +243,6 @@ function openProject(type = "trails", id = "Sky", game = 0)
         complete: function() {
             // Callback function executed after the animation is complete
             // Hide the menu
-			console.log("b");
             menu.css('display', 'none');
 			$('.map-tooltip').css('display', 'none');
         }
@@ -622,7 +620,6 @@ async function downloadAndExtractZip(name, ID, gaugeObject, outputFolder) {
             speed = written - lastWritten;
             lastWritten = written;
         }, 1000);
-        console.log(res);
 
         const fileStream = fs.createWriteStream(zipFilePath);
         gaugeObject.html('');
@@ -802,7 +799,6 @@ async function downloadFiles() {
 			try{
 				const files = fs.readdirSync(steamUserFolder, { withFileTypes: true });
 				
-				console.log("On regarde là-dedans dans un premier temps :", steamUserFolder);
 				for (const file of files)  {
 					const fullPath = path.join(steamUserFolder, file.name);
 					
@@ -1017,20 +1013,24 @@ function formatBytes(bytes, decimals = 2) {
 // Permet de faire des requêtes web
 // Si method est GET, les arguments doivent être mis dans l'url (https://domaine.com/page.php?arg=1&args=2)
 async function getFetch(url, method = "POST", args = {}, json = true, asy = false){
-	let result;
+    let result;
 
     result = await $.ajax({
         url: url,
         type: method,
         data: args,
         async: asy,
+        dataType: json ? 'json' : undefined // Ensures response is parsed as JSON
     }).catch(function(error){
-        return JSON.parse('{"error": {"code": ' + error.status + '}}');
+        return { error: { code: error.status } }; // Return the error in a standard object format
     });
 
-    if(json)
-        return JSON.parse(result);
+    // If the 'json' flag is true, the response should already be parsed correctly, so no need for JSON.parse.
+    if(json) {
+        return result;
+    }
 
+    // If 'json' is false, we return the raw response
     return result;
 }
 const { execSync } = require('child_process');
@@ -1131,7 +1131,6 @@ function getGivenGame(game) {
   for (const path of list) {
 
 		var fullpath = path;
-		console.log("On teste " + fullpath);
 		if (fs.existsSync(fullpath)) {
 			return fullpath;
 	  }
@@ -1237,7 +1236,6 @@ function onChangeCheckbox() {
 function playButton() {
 	removeTheAbomination();
 	currentPath = $('.filePath').html();
-	console.log(currentPath);
 	try{
 		const stats = fs.statSync(currentPath);
 		if (!stats.isDirectory()) {
@@ -1457,7 +1455,7 @@ function handleMarkerEnter(event) {
     let imageURL = steamId === -1
         ? `images/${id}.png`
         : `https://cdn.akamai.steamstatic.com/steam/apps/${steamId}/header.jpg`;
-
+	
     updateMarkerColor(marker);
 
     marker.setAttribute('stroke', '#FFFF00');
@@ -1695,6 +1693,7 @@ function createClassicMenu(games_id){ //games = retro ou trails
 				let imageURL = "https://cdn.akamai.steamstatic.com/steam/apps/" + valueGame['steamId'] + "/header.jpg";
 				if(valueGame['steamId'] == -1) // Si le jeu est un jeu nom Steam, honte à vous ! Et on va chercher son image dans le dossier "images"
 					imageURL = "images/" + valueGame['name'] + ".png";
+					
 				games = games + '<img class="game-icon" onclick="openProject(\''+games_id+'\', \'' + key + '\', \'' + keyGame + '\')" src="' + imageURL + '">';
 				if(dataUser['projects'][valueGame["name"]] === undefined) // Si le projet n'existe pas dans les infos utilisateurs, on le créé
 					dataUser['projects'][valueGame["name"]] = {"patch": null, "voice": null};
