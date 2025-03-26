@@ -126,12 +126,12 @@ async function loadConfig()
 {
     config = require("./config.json");
     if(config["useOnlineConfig"]) // Si useOnlineConfig, on utilise 
-        config = await getFetch('https://twnkek290001-s3.fhmutu.net/config.json', 'GET', {}, true);
+        config = await getFetch('https://leliberlnews.fr/config.json', 'GET', {}, true);
 
     if(fs.existsSync('./projects.json') && !config["useOnlineConfig"]) // Si le fichier projects.json existe dans le répertoire de l'appli ET qu'on se sert des fichiers locaux, on l'utilise
         projectsList = require("./projects.json");
     else // Sinon, on va chercher celui en ligne !
-        projectsList = await getFetch('https://twnkek290001-s3.fhmutu.net/projects.json', 'GET', {}, true);
+        projectsList = await getFetch('https://leliberlnews.fr/projects.json', 'GET', {}, true);
 
     return 1;
 }
