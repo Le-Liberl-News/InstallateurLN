@@ -30,7 +30,8 @@ var projectsList;
 var currentTrailsMode = "classic";
 var numberPicture = 1; // Le numéro de l'image du projet affiché
 
-var gameLoaded; // Défini quel projet est chargé actuellement
+var gameLoaded; // Définit quel projet est chargé actuellement
+var arcLoaded; // Définit quel arc est chargé actuellement
 
 var dataUser = {}; // Les données de l'utilisateur ; soit on les charge depuis config.json (Dans AppData) soit on les créé
 var menu; // Contient quel menu est affiché pour un réaffichage futur
@@ -190,9 +191,12 @@ function openProject(type = "trails", id = "Sky", game = 0)
     $('.gameInfos').css('display', 'inline-block');
     $('.gameCredits').css('display', 'none');
 	
+	menu.animate({
+        opacity: 0
+    }, config["speedAnimation"]);
 	
     gameLoaded = projectsList[type][id]['games'][game];
-	
+
     let gameName = gameLoaded['name'];
 
     $('#credits').html('• Équipe du projet : <br><br />');
@@ -206,8 +210,21 @@ function openProject(type = "trails", id = "Sky", game = 0)
     $('#gamePicture').attr("src", "images/projets/" + id + game + "1.png"); // On affiche la première image du projet, et on réinitialise son affichage
     numberPicture = 1;
 
+    if ('voicesFilenames' in gameLoaded) {
+	  $('#checkVoice').css("display", "block");
+	} else {
+	  $('#checkVoice').css("display", "none");
+	 document.getElementById('checkBox').checked = false
+    }
+	if ('manual' in gameLoaded) {
+	  $('#manual').css("display", "block");
+	}
+	else{
+	  $('#manual').css("display", "none");
+	}
+	const uninstallIcon = document.getElementById('uninstallAll');
+	uninstallIcon.style.display = ('toBeUninstalled' in gameLoaded) ? 'inline-block' : 'none';
 	
-    $('#checkVoice').css("display", "block");
     $('#projectBar').css("background", "linear-gradient(to right, #3DB9F5 0%, #3df5c2 0%, #3DB9F500 0%)");
     $('#projectBar').html("");
 
@@ -230,10 +247,6 @@ function openProject(type = "trails", id = "Sky", game = 0)
 	onChangePath();
 	updateCurrentState(); // on actualise l'état
 	updateGUI();
-	
-    menu.animate({
-        opacity: 0
-    }, config["speedAnimation"]);
 	
     setTimeout(function(){
         $('.displayGame').css('display', 'block').animate({
@@ -270,28 +283,37 @@ function updateDownloads(){
 }
 
 // Permet de retourner à l'écran d'accueil
-function goHome()
-{
-    $('.displayGame').animate({
-        opacity: 0
-    }, config["speedAnimation"]);
+// ===============================
+// Retour à l'accueil
+// ===============================
+function goHome() {
+    const menu = $('#menu'); // ton menu principal
+    const trailsActive = $('#modeTrails').hasClass('active');
+    const listSelector = trailsActive ? '.displayList.trails' : '.displayList.retro';
 
-    setTimeout(function(){
-        $('.displayGame').css('display', 'none');
-        menu.css('display', 'block');
-        menu.animate({
-            opacity: 1
-        }, config["speedAnimation"]);
-    }, config["speedAnimation"]);
-	
-	$('#trailsModeButton').css('display', 'block');
-	if ((currentTrailsMode == "map") && ($('#modeTrails').hasClass('active'))) // Si le mode "Trails" est actif
-    {
-		$('#map-svg').css('display', 'block');
-		
-	}
-	
+    // Masque l'écran du jeu
+    $('.displayGame').stop(true, true).animate({ opacity: 0 }, config["speedAnimation"], function() {
+        $(this).css('display', 'none');
+
+        // Affiche le menu principal
+        menu.css('display', 'block').animate({ opacity: 1 }, config["speedAnimation"]);
+
+        // Affiche la liste de jeux correspondant au mode actif
+        $(listSelector).css({ display: 'block', opacity: 1 });
+    });
+
+    // Affiche le bouton Trails si ce mode est actif
+    if (trailsActive) {
+        $('#trailsModeButton').css('display', 'block');
+    }
+
+    // Si on est en mode Trails et que c’est le menu "map", on affiche la map
+    if (trailsActive && currentTrailsMode === "map") {
+        $('#map-svg').css('display', 'block');
+    }
 }
+
+
 
 // Change l'image affichée ; mettre un nombre négatif pour afficher l'image précédente
 function changeImage(num = 1)
@@ -310,51 +332,82 @@ function changeImage(num = 1)
 }
 
 // Permet de passer des jeux Trails aux jeux rétro, et inversement
-function changeMode(mode = 'trails')
-{
-	goHome();
-    if($('.displayGame').css('display') != 'none')
+// ===============================
+// Gestion du mode Trails / Retro
+// ===============================
+function changeMode(mode = 'trails') {
+
+    const buttonTrails = $('#modeTrails');
+    const buttonRetro = $('#modeRetro');
+
+    // Si aucun menu de jeu n'est visible, on ne change pas de mode
+    if ($('.displayGame').css('display') !== 'none') {
+        console.log("test1");
         return;
-
-    let buttonTrails = $('#modeTrails');
-    let buttonRetro = $('#modeRetro');
-
-    if((mode == 'trails' && buttonTrails.hasClass('active')) || (mode == 'retro' && !buttonTrails.hasClass('active')))
-        return;
-
-    if(buttonTrails.hasClass('active')) // Si le mode "Trails" est actif
-    {
-        buttonTrails.removeClass('active');
-        buttonRetro.addClass('active');
-        $('.Trails').animate({
-            opacity: 0
-        }, config["speedAnimation"]);
-
-        setTimeout(function(){
-            $('.Trails').css('display', 'none');
-            $('.Retro').css('display', 'block');
-            $('.Retro').animate({
-                opacity: 1
-            }, config["speedAnimation"]);
-        }, config["speedAnimation"]);
     }
-    else // Sinon, c'est que c'est le mode "Rétro" qui est actif
-    {
+
+    // Si on clique sur le mode déjà actif, on ne fait rien
+    if ((mode === 'trails' && buttonTrails.hasClass('active')) ||
+        (mode === 'retro' && buttonRetro.hasClass('active'))) {
+        console.log("test2");
+        return;
+    }
+
+    // Mise à jour des classes des boutons
+    if (mode === 'trails') {
         buttonTrails.addClass('active');
         buttonRetro.removeClass('active');
-        $('.Retro').animate({
-            opacity: 0
-        }, config["speedAnimation"]);
-
-        setTimeout(function(){
-            $('.Retro').css('display', 'none');
-            $('.Trails').css('display', 'block');
-            $('.Trails').animate({
-                opacity: 1
-            }, config["speedAnimation"]);
-        }, config["speedAnimation"]);
+    } else {
+        buttonRetro.addClass('active');
+        buttonTrails.removeClass('active');
     }
+
+    // Masque immédiatement les deux menus pour éviter les chevauchements
+    $('.displayList.trails, .displayList.retro').stop(true, true).css({
+        opacity: 0,
+        display: 'none'
+    });
+
+    // Affiche et anime le menu du mode sélectionné
+    if (mode === 'trails') {
+        $('#trailsModeButton').css('display', 'block');
+        $('.displayList.trails').css('display', 'block').animate(
+            { opacity: 1 },
+            config["speedAnimation"]
+        );
+
+        // Change le background
+        document.head.querySelector('#dynamicBackground')?.remove();
+        document.head.insertAdjacentHTML(
+            'beforeend',
+            `<style id="dynamicBackground">.mainWindow::after { background: url("images/trailsbg.png"); }</style>`
+        );
+
+        // Left menu
+        document.querySelector('.leftMenu').style.background = '#AD7C5Acc';
+
+    } else { // mode retro
+        $('#trailsModeButton').css('display', 'none');
+        $('.displayList.retro').css('display', 'block').animate(
+            { opacity: 1 },
+            config["speedAnimation"]
+        );
+
+        // Change le background
+        document.head.querySelector('#dynamicBackground')?.remove();
+        document.head.insertAdjacentHTML(
+            'beforeend',
+            `<style id="dynamicBackground">.mainWindow::after { background: url("images/retrobg.png"); }</style>`
+        );
+
+        // Left menu
+        document.querySelector('.leftMenu').style.background = '#7FAADBCC';
+    }
+
+    // Retour à l'accueil
+    goHome();
 }
+
 
 function compareVersions(version1, version2) {
     const v1 = version1.split('.').map(Number);
@@ -509,8 +562,12 @@ async function updateGUI(){
 }
 
 function updateCurrentState(){
-	
-	const vp = isVoicePatchInstalled();
+    let hasVoice = false
+	let vp = null
+	if ('voicesFilenames' in gameLoaded)
+		hasVoice = true
+		vp = isVoicePatchInstalled();
+		
 	let releaseDate = "";
 	
 	let userVersion = "Aucune"
@@ -1729,17 +1786,36 @@ function createClassicMenu(games_id){ //games = retro ou trails
 // Add an event listener to log the mouse position when the mouse moves
 document.addEventListener('mousemove', logMousePosition);*/
 
-function selectFolder(){
-	
-	const showDialog = remote.dialog.showOpenDialogSync({
-		properties: ['openDirectory']
-	});
-	if (showDialog && showDialog.length > 0) {
-		installationPath = showDialog[0];
-	} else {
-	}
-	onChangePath();
+function selectFolder() {
+  const { dialog } = require('@electron/remote'); // selon ta version d’Electron
+  let showDialog;
+  
+  if (gameLoaded["fileFormat"]) {
+    // --- Sélection de fichier ---
+    showDialog = dialog.showOpenDialogSync({
+      title: "Sélectionnez un fichier",
+      filters: [
+        { name: "Fichiers valides", extensions: gameLoaded["fileFormat"].map(ext => ext.replace('.', '')) }
+      ],
+      properties: ['openFile']
+    });
+  } else {
+    // --- Sélection de dossier ---
+    showDialog = dialog.showOpenDialogSync({
+      title: "Sélectionnez un dossier",
+      properties: ['openDirectory']
+    });
   }
+
+  if (showDialog && showDialog.length > 0) {
+    installationPath = showDialog[0];
+    console.log("✅ Chemin sélectionné :", installationPath);
+  } else {
+    console.log("❌ Aucune sélection effectuée.");
+  }
+
+  onChangePath();
+}
   
 function switchTrailsMode(mode){
 	const modeButton = document.getElementById("trailsModeButton");

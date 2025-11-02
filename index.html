@@ -3,7 +3,7 @@
             <div class="leftMenu">
                 <img class="logo" src="images/logo.png">
                 <button id="modeTrails" onclick="changeMode('trails')" class="active">Série "Trails"</button>
-                <button id="modeRetro" onclick="changeMode('retro')" title="Prochainement" disabled style="color: #878086">Jeux rétros</button>
+                <button id="modeRetro" onclick="changeMode('retro')">Jeux rétros</button>
 				
                 <span class="icon-container">
 					<img id="helpButton" src="./images/help_button.png" alt="Aide" onclick="openWindow('HelpWindow')" onmouseover="changeImageByPath('help_button2.png')" onmouseout="changeImageByPath('help_button.png')">
@@ -50,7 +50,7 @@
 								• Nombre de téléchargements :<br><span id="nbDls">UNDEFINED</span><br>
 							</div>
 							
-							<label id="checkVoice" class="container">Inclure les voix de la version EVO (~2Go)
+							<label id="checkVoice" class="container">Inclure les voix de la version EVO (~2 Go)
 								<input id="checkBox" type="checkbox" checked="checked" onchange="onChangeCheckbox();">
 								<span class="checkmark"></span>
 							</label>
@@ -59,6 +59,9 @@
 						<div class="button-container">
 							<button onclick="playButton()" id="installPatch">
 								Installer
+							</button>
+							<button onclick="openManual()" id="manual">
+								Consulter le manuel
 							</button>
 							<i onclick="uninstall()" class="fa-solid fa-trash" style="cursor: pointer" title="Désinstaller le patch" id="uninstallAll"></i>
 						</div>
@@ -88,7 +91,7 @@
 			<div class="popup-content">
 				<span onclick="closeWindow('errorwindow')" class="close-button topright">&times;</span>
 			  <h2>Attention !</h2>
-			  <p>Le dossier d'installation spécifié est introuvable.</p>
+			  <p>Le chemin spécifié est incorrect.</p>
 			</div>
 		</div>
 		<div class="popup-container" id="HelpWindow">
