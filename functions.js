@@ -1485,15 +1485,37 @@ function getXdelta3Path(){
 	return candidates.find(candidate => fs.existsSync(candidate)) || null;
 }
 
-function sha1OfFile(filePath){
-	return new Promise((resolve, reject) => {
-		const hash = crypto.createHash('sha1');
-		const stream = fs.createReadStream(filePath);
+function sha1OfBuffer(buffer){
+	return crypto.createHash('sha1').update(buffer).digest('hex').toUpperCase();
+}
 
-		stream.on('data', chunk => hash.update(chunk));
-		stream.on('error', reject);
-		stream.on('end', () => resolve(hash.digest('hex').toUpperCase()));
-	});
+// Un .d88 peut contenir plusieurs disquettes mises bout à bout : c'est la forme
+// sous laquelle ces jeux circulent le plus souvent ("packs"). Or les patchs
+// visent une disquette précise, il faut donc les séparer.
+//
+// Chaque disquette commence par un en-tête de 0x2B0 octets dont l'offset 0x1C
+// porte sa longueur totale ; la suivante commence juste après.
+function splitD88(buffer){
+	const HEADER_SIZE = 0x2B0;
+	const segments = [];
+	let offset = 0;
+
+	while (offset + HEADER_SIZE <= buffer.length){
+		const size = buffer.readUInt32LE(offset + 0x1C);
+
+		if (size < HEADER_SIZE || offset + size > buffer.length)
+			return [buffer]; // Taille incohérente : ce n'est pas un pack, on prend le fichier tel quel
+
+		segments.push(buffer.subarray(offset, offset + size));
+		offset += size;
+	}
+
+	// On doit retomber exactement sur la fin du fichier, sinon on n'a pas compris
+	// sa structure et il vaut mieux le traiter d'un bloc
+	if (offset !== buffer.length || segments.length === 0)
+		return [buffer];
+
+	return segments;
 }
 
 // Les SHA-1 des lisez-moi sont écrits en majuscules, mais autant ne pas en dépendre
@@ -1539,33 +1561,61 @@ async function applyRetroXdeltas(recipe, workFolder, gaugeObject){
 
 	for (const diskFile of retroFiles){
 		gaugeObject.html('Identification de ' + path.basename(diskFile) + '...');
-		const sha1 = await sha1OfFile(diskFile);
 
-		// Le même SHA-1 est cherché parmi toutes les disquettes de la recette :
-		// le joueur peut donc sélectionner ses disquettes dans n'importe quel ordre
-		let match = null;
-		for (const target of (recipe['targets'] || [])){
-			const variant = findVariant(target['variants'], sha1);
-			if (variant){
-				match = { target: target, patch: variant };
-				break;
+		// Le fichier fourni peut réunir plusieurs disquettes : on les traite une
+		// à une, puis on les remet bout à bout dans le même ordre, pour rendre
+		// au joueur un fichier de la même forme que celui qu'il a donné
+		const segments = splitD88(fs.readFileSync(diskFile));
+		const isPack = segments.length > 1;
+		const translated = [];
+		let matchedInFile = 0;
+
+		for (let index = 0; index < segments.length; index++){
+			const segment = segments[index];
+			const sha1 = sha1OfBuffer(segment);
+			const diskLabel = isPack ? ' (disquette ' + (index + 1) + '/' + segments.length + ')' : '';
+
+			// Le SHA-1 est cherché parmi toutes les disquettes de la recette : le
+			// joueur peut donc fournir ses disquettes dans n'importe quel ordre
+			let match = null;
+			for (const target of (recipe['targets'] || [])){
+				const variant = findVariant(target['variants'], sha1);
+				if (variant){
+					match = { target: target, patch: variant };
+					break;
+				}
 			}
+
+			if (!match){
+				// Disquette non couverte : on la garde telle quelle dans la sortie
+				unknown.push({ file: path.basename(diskFile) + diskLabel, sha1: sha1 });
+				translated.push(segment);
+				continue;
+			}
+
+			const patchFile = path.join(workFolder, match.patch);
+			if (!fs.existsSync(patchFile))
+				throw new Error(match.patch + " est absent de l'archive du patch.");
+
+			gaugeObject.html('Traduction de ' + path.basename(diskFile) + diskLabel + '...');
+
+			// xdelta3 travaille sur des fichiers : on sort la disquette du pack
+			const sourcePath = path.join(workFolder, 'disque' + index + '.d88');
+			const resultPath = path.join(workFolder, 'disque' + index + '_fr.d88');
+			fs.writeFileSync(sourcePath, segment);
+			await applyXdelta(xdelta3, patchFile, sourcePath, resultPath);
+
+			translated.push(fs.readFileSync(resultPath));
+			matchedInFile++;
+			patched.push({ label: (match.target['label'] || '') + diskLabel });
 		}
 
-		if (!match){
-			unknown.push({ file: diskFile, sha1: sha1 });
-			continue;
-		}
+		if (matchedInFile === 0)
+			continue; // Rien de reconnu dans ce fichier : pas de sortie à écrire
 
-		const patchFile = path.join(workFolder, match.patch);
-		if (!fs.existsSync(patchFile))
-			throw new Error(match.patch + " est absent de l'archive du patch.");
-
-		const outputFile = buildRetroOutputName(diskFile, match.target['suffix']);
-		gaugeObject.html('Traduction de ' + path.basename(diskFile) + '...');
-		await applyXdelta(xdelta3, patchFile, diskFile, outputFile);
-
-		patched.push({ output: outputFile, label: match.target['label'] || '' });
+		const outputFile = buildRetroOutputName(diskFile, (recipe['targets'][0] || {})['suffix']);
+		fs.writeFileSync(outputFile, Buffer.concat(translated));
+		patched.forEach(entry => { if (!entry.output) entry.output = outputFile; });
 	}
 
 	return { patched: patched, unknown: unknown };
@@ -1583,14 +1633,30 @@ async function runRetroPatcher(recipe, workFolder, gaugeObject){
 		throw new Error(recipe['command'] + " est absent de l'archive du patch.");
 
 	const patched = [];
+	const unknown = [];
 
 	for (const diskFile of retroFiles){
 		gaugeObject.html('Traduction de ' + path.basename(diskFile) + '...');
+
+		// dsretrack renvoie 0 même quand il n'a rien produit (fichier non
+		// reconnu, mauvaise version du jeu) : on ne peut pas se fier au code de
+		// sortie, on regarde donc ce qui est réellement apparu dans le dossier
+		const folder = path.dirname(diskFile);
+		const before = new Set(fs.readdirSync(folder));
+
 		await runProcess(patcher, [diskFile], path.dirname(patcher));
-		patched.push({ output: path.dirname(diskFile), label: recipe['label'] || '' });
+
+		const created = fs.readdirSync(folder).filter(name => !before.has(name));
+
+		if (created.length === 0){
+			unknown.push({ file: path.basename(diskFile), sha1: 'aucun fichier produit' });
+			continue;
+		}
+
+		patched.push({ output: path.join(folder, created[0]), label: recipe['label'] || '' });
 	}
 
-	return { patched: patched, unknown: [] };
+	return { patched: patched, unknown: unknown };
 }
 
 // Manuels, FAQ, font.rom... : tout ce qui accompagne le patch est déposé dans
@@ -1687,13 +1753,14 @@ async function installRetroPatch(){
 function showUnknownDumps(unknown, gaugeObject){
 	gaugeObject.html("Version du jeu non reconnue.").css('background', '#ff000080');
 
-	const hashes = unknown.map(entry => path.basename(entry.file) + ' : ' + entry.sha1).join('<br>');
+	const hashes = unknown.map(entry => entry.file + ' : ' + entry.sha1).join('<br>');
 	document.getElementById('soonText').innerHTML =
 		"Aucun patch ne correspond au(x) fichier(s) fourni(s).<br><br>"
-		+ "Il existe plusieurs versions de ces jeux : vérifiez que votre dump "
-		+ "correspond bien à une version couverte par le patch, et qu'il ne "
-		+ "contient pas plusieurs disquettes réunies dans un seul fichier.<br><br>"
-		+ "<b>Empreintes SHA-1 de vos fichiers :</b><br>" + hashes + "<br><br>"
+		+ "Il existe plusieurs versions de ces jeux : votre disquette est "
+		+ "probablement une variante que le patch ne couvre pas encore. "
+		+ "Les fichiers réunissant plusieurs disquettes sont gérés "
+		+ "automatiquement, ce n'est donc pas la cause.<br><br>"
+		+ "<b>Empreintes SHA-1 :</b><br>" + hashes + "<br><br>"
 		+ "Vous pouvez les communiquer à l'équipe sur le Discord.";
 	document.querySelector('#soonWindow h2').innerHTML = 'Version non reconnue';
 	openWindow('soonWindow');
