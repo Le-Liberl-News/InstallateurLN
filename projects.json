@@ -8,7 +8,7 @@
           "name": "Trails in the Sky FC",
           "steamId": 251150,
           "GOGId": 1207665083,
-          "patchVersion": "1.0.4",
+          "patchVersion": "1.0.5",
           "patchFilenames": ["patch.zip"],
           "voicesFilenames": ["voices_1.zip","voices_2.zip","voices_3.zip"],
           "voicedScriptFilenames": ["script_dubbed.zip"],
@@ -83,6 +83,8 @@
           "name": "Trails in the Sky SC",
           "steamId": 251290,
           "patchVersion": "0",
+          "comingSoon": true,
+          "comingSoonText": "La traduction de <b>Trails in the Sky SC</b> est en cours !<br><br>L'icône s'activera ici même dès que le patch sera disponible.<br>Suivez l'avancement sur le Discord de l'équipe.",
           "desc": "Considéré comme l'une des séries de JRPG au tour par tour les plus vastes, les plus longues et les plus méticuleusement détaillées de tous les temps, ce premier chapitre de la saga Trails ouvre la voie à ce qui est rapidement devenu la franchise la plus populaire et la plus vendue de Nihon Falcom, le développeur d'Ys, en plus de 30 ans d'histoire.",
           "status": "Indisponible",
           "inGameDate": "Septembre S1202",
@@ -200,14 +202,14 @@
           "locationOnMap": { "x": 48.48, "y": 53.3 }
         },
         "1": {
-          "name": "Kuro no Kiseki II -CRIMSON SiN-",
+          "name": "Trails through Daybreak II",
           "steamId": 2113920,
           "patchVersion": "0",
           "desc": "Considéré comme l'une des séries de JRPG au tour par tour les plus vastes, les plus longues et les plus méticuleusement détaillées de tous les temps, ce premier chapitre de la saga Trails ouvre la voie à ce qui est rapidement devenu la franchise la plus populaire et la plus vendue de Nihon Falcom, le développeur d'Ys, en plus de 30 ans d'histoire.",
           "exe_name": "ed6_win.exe",
           "status": "Indisponible",
           "inGameDate": "S1209",
-          "availableLanguages": "Japonais, Anglais [Fan]",
+          "availableLanguages": "Japonais, Anglais",
           "locationOnMap": { "x": 48.48, "y": 53.3 }
         },
         "2": {
@@ -227,31 +229,135 @@
   "retro": {
     "retro": {
       "title": "Jeux rétros divers",
-      "icon": "sky",
+      "icon": "falc",
       "games": {
         "0": {
           "name": "Horror House",
+          "patchFilenames": ["0.xdelta"],
           "steamId": -1,
           "patchVersion": "1.0.0",
           "voiceVersion": "0",
-          "desc": "DUMMY",
-          "staff": ["DUMMY"]
+          "desc": "Tout premier jeu de Nihon Falcom, sorti en 1983 sur PC-8801. Une aventure textuelle et graphique dans un manoir hanté, où l'on progresse en tapant ses commandes au clavier.",
+          "staff": ["A.isoce", "Twn"],
+          "fileFormat": ["t88", "d88"],
+          "manual": "",
+          "install": {
+            "method": "link",
+            "url": "https://leliberlnews.fr/project_detail?id=horror-house-1"
+          }
         },
         "1": {
           "name": "Horror House 2",
+          "patchFilenames": ["1.xdelta"],
           "steamId": -1,
           "patchVersion": "1.0.0",
           "voiceVersion": "0",
-          "desc": "DUMMY",
-          "staff": ["DUMMY"]
+          "desc": "Suite directe du tout premier jeu de Falcom, sortie en 1985 sur PC-8801 sous le titre « Kyouki no Yakata ». Toujours une aventure au clavier, plus vaste et plus retorse que son aînée.",
+          "staff": ["A.isoce"],
+          "fileFormat": ["t88", "d88"],
+          "manual": "",
+          "install": {
+            "method": "link",
+            "url": "https://leliberlnews.fr/project_detail?id=horror-house-2"
+          }
         },
         "2": {
           "name": "Demon's Ring",
+          "patchFilenames": ["2.xdelta"],
           "steamId": -1,
           "patchVersion": "1.0.0",
           "voiceVersion": "0",
-          "desc": "DUMMY",
-          "staff": ["DUMMY"]
+          "desc": "Aventure textuelle de Nihon Falcom parue en 1984 sur PC-8801, où le joueur part en quête d'un anneau démoniaque.",
+          "staff": ["A.isoce"],
+          "fileFormat": ["t88", "d88"],
+          "manual": "",
+          "install": {
+            "method": "link",
+            "url": "https://leliberlnews.fr/project_detail?id=demons-ring"
+          }
+        },
+        "3": {
+          "name": "Dragon Slayer",
+          "image": "Dragon_Slayer",
+          "steamId": -1,
+          "patchVersion": "1.0.0",
+          "desc": "Sorti en 1984 sur PC-8801, Dragon Slayer est l'un des tout premiers action-RPG de l'histoire du jeu vidéo, et la pierre fondatrice d'une série qui mènera jusqu'aux Trails.",
+          "staff": ["A.isoce"],
+          "fileFormat": ["d88", "t88"],
+          "install": {
+            "method": "exec",
+            "archive": "Dragon_Slayer/dragon-slayer-patch-fr.zip",
+            "command": "d88_patcher_exe/dsretrack.exe",
+            "label": "Disquette du jeu",
+            "extras": ["manuel_dragon-slayer.pdf", "LISEZ-MOI.txt"]
+          }
+        },
+        "4": {
+          "name": "Xanadu",
+          "steamId": -1,
+          "patchVersion": "1.0.0",
+          "desc": "Deuxième volet de la série Dragon Slayer, sorti en 1985 sur PC-8801 mk2-SR. Action-RPG à défilement latéral, ce fut le jeu le plus vendu de l'histoire du micro-ordinateur japonais.",
+          "staff": ["A.isoce"],
+          "fileFormat": ["d88", "t88"],
+          "install": {
+            "method": "xdelta",
+            "archive": "Xanadu/xanadu-[FR].zip",
+            "targets": [
+              {
+                "label": "Disquette A (programme)",
+                "variants": {
+                  "E2B827591E7E1D873B1F234C8C47A03D65617504": "patch-programme-version-1.xdelta",
+                  "E3304E45FC566B386A2C312F0F5FEFC6C38373D5": "patch-programme-version-2.xdelta",
+                  "C4270BB4ACE09F3CD39BD497F9B3DB42D0CA9C38": "patch-programme-version-3.xdelta",
+                  "FCBD29AD9BBD2E2CDC8BC21658F2DD2F45197264": "patch-programme-version-4.xdelta"
+                }
+              },
+              {
+                "label": "Disquette B (données)",
+                "variants": {
+                  "5EEA0C880A1489973E30C7BFF55E90C269E11561": "patch-donnees-version-1.xdelta",
+                  "8A583A47E9CE13A822E2A47BBDF626C2515A3E9A": "patch-donnees-version-2.xdelta",
+                  "E804059A1C1574D0F8177E0E01BFBCEBD646CFFF": "patch-donnees-version-3.xdelta"
+                }
+              }
+            ],
+            "extras": [
+              "Disquette_vierge.d88",
+              "cheat.txt",
+              "aide_du_traducteur.txt",
+              "Lisez-moi.txt",
+              "livret_manuel_xanadu.pdf",
+              "livret_conseils_xanadu.pdf",
+              "livret_bestiaire_xanadu.pdf"
+            ]
+          }
+        },
+        "5": {
+          "name": "Asteka",
+          "steamId": -1,
+          "patchVersion": "1.0.0",
+          "desc": "Aventure de Nihon Falcom sortie en 1985 sur PC-8801, qui emmène le joueur sur les traces d'une civilisation précolombienne. Connu aussi sous le nom « Asteka: The Lost Continent ».",
+          "staff": ["A.isoce"],
+          "fileFormat": ["d88", "t88"],
+          "install": {
+            "method": "xdelta",
+            "archive": "Asteka/patch_asteka_fr.zip",
+            "targets": [
+              {
+                "label": "Disquette du jeu",
+                "variants": {
+                  "1851EED0576C46FFEDB62F98623B0FED508E1969": "asteka_0.xdelta",
+                  "7649DFD30FA9BA8640DCA869A28FF22AE5A1D171": "asteka_1.xdelta",
+                  "3C0DEEC90BB1D389FDE7AD7F59EF2A787736E97B": "asteka_2.xdelta",
+                  "644BC8255DD20DDE9A37A8138D51756EF697FD7B": "asteka_3.xdelta",
+                  "ACA12744DD3BD2BBFA369B8DB07386AAD7BF4165": "asteka_4.xdelta",
+                  "08602D42E6C3EDE5B918C8238D43DF8A7DC69957": "asteka_5.xdelta",
+                  "61245DAD652484A23522340EF7B759B92B391EA1": "asteka_6.xdelta"
+                }
+              }
+            ],
+            "extras": ["font.rom", "Manuel_Asteka.pdf", "faq.txt", "lisez-moi.txt"]
+          }
         }
       }
     }

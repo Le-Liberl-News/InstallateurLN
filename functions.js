@@ -29,6 +29,7 @@ var config;
 var projectsList;
 var currentTrailsMode = "classic";
 var numberPicture = 1; // Le numéro de l'image du projet affiché
+var numberOfPictures = 3; // Combien de captures existent pour le projet affiché
 
 var gameLoaded; // Définit quel projet est chargé actuellement
 var arcLoaded; // Définit quel arc est chargé actuellement
@@ -125,16 +126,31 @@ async function loadElements()
 
 async function loadConfig()
 {
-    config = require("./config.json");
-    if(config["useOnlineConfig"]) // Si useOnlineConfig, on utilise 
-        config = await getFetch('https://leliberlnews.fr/config.json', 'GET', {}, true);
+    const localConfig = require("./config.json");
+
+    config = localConfig;
+    if(config["useOnlineConfig"]) // Si useOnlineConfig, on utilise
+        config = await fetchOrFallback('https://leliberlnews.fr/config.json', localConfig);
 
     if(fs.existsSync('./projects.json') && !config["useOnlineConfig"]) // Si le fichier projects.json existe dans le répertoire de l'appli ET qu'on se sert des fichiers locaux, on l'utilise
         projectsList = require("./projects.json");
     else // Sinon, on va chercher celui en ligne !
-        projectsList = await getFetch('https://leliberlnews.fr/projects.json', 'GET', {}, true);
+        projectsList = await fetchOrFallback('https://leliberlnews.fr/projects.json', require("./projects.json"));
 
     return 1;
+}
+
+// Le site peut être injoignable : plutôt que de rester bloqué sur l'écran de
+// chargement, on repart sur la copie livrée avec l'installateur
+async function fetchOrFallback(url, fallback)
+{
+    try {
+        return await getFetch(url, 'GET', {}, true) || fallback;
+    }
+    catch (error) {
+        console.log("Impossible de joindre " + url + ", on utilise la copie locale.", error.message);
+        return fallback;
+    }
 }
 
 // Écrit la variable dataUser dans config.json
@@ -201,14 +217,19 @@ function openProject(type = "trails", id = "Sky", game = 0)
 
     $('#credits').html('• Équipe du projet : <br><br />');
 
-    gameLoaded['staff'].forEach(element => {
+    (gameLoaded['staff'] || []).forEach(element => {
         $('#credits').html($('#credits').html() + element + '<br>');
     });
 
     $('#gameName').html(gameName); // On remplace le nom dans l'en-tête par le nom du jeu
     $('#gameDesc').html(projectsList[type][id]['games'][game]['desc']); // On remplace la description sur la page par celle du jeu
-    $('#gamePicture').attr("src", "images/projets/" + id + game + "1.png"); // On affiche la première image du projet, et on réinitialise son affichage
+    // On affiche la première image du projet, et on réinitialise son affichage
+    numberOfPictures = countProjectPictures(id, game);
+    $('#gamePicture').attr("src", numberOfPictures > 0 ? "images/projets/" + id + game + "1.png" : "images/projets/dummy.png");
     numberPicture = 1;
+
+    // Pas de flèches de défilement s'il n'y a qu'une capture
+    $('.displayPicture i.fa-arrow-left, .displayPicture i.fa-arrow-right').css('display', numberOfPictures > 1 ? 'block' : 'none');
 
     if ('voicesFilenames' in gameLoaded) {
 	  $('#checkVoice').css("display", "block");
@@ -216,7 +237,7 @@ function openProject(type = "trails", id = "Sky", game = 0)
 	  $('#checkVoice').css("display", "none");
 	 document.getElementById('checkBox').checked = false
     }
-	if ('manual' in gameLoaded) {
+	if (gameLoaded['manual']) {
 	  $('#manual').css("display", "block");
 	}
 	else{
@@ -230,12 +251,29 @@ function openProject(type = "trails", id = "Sky", game = 0)
 
     $('#file').prop('disabled', false);
 
-    $('.filePath').html("Dossier \"" + gameLoaded['steamFolderName'] + "\" non trouvé.");
+	// Les jeux rétro ne sont pas sur Steam et repartent d'une sélection vierge
+	// à chaque ouverture : rien à détecter, c'est au joueur de fournir son dump
+	const isRetroGame = 'install' in gameLoaded;
+
+	retroFiles = [];
+
+	// Le sélecteur de fichier n'a de sens que si on patche vraiment quelque chose :
+	// pour un jeu qui renvoie vers le site, il n'y a rien à sélectionner
+	const isLinkOnly = isRetroGame && gameLoaded['install']['method'] === 'link';
+	$('.inputFolder').css('display', isLinkOnly ? 'none' : 'block');
+
+	if (isRetroGame) {
+		installationPath = null;
+		$('.filePath').html("Aucune image disque sélectionnée");
+	}
+	else {
+		$('.filePath').html("Dossier \"" + gameLoaded['steamFolderName'] + "\" non trouvé.");
+	}
     $('.filePath').addClass("noPath");
-	
+
 	updateDownloads();
     // On essaye de trouver où se trouve le jeu, si l'utilisateur l'a d'installé sur Steam
-	if (installationPath == null)
+	if (installationPath == null && !isRetroGame)
 		installationPath = getGivenGame(gameLoaded)
 
 	/*
@@ -272,8 +310,9 @@ function updateDownloads(){
 	$('#nbDls').html('   ');
 	getFetch(get_url, "POST", data, false, asy = true)
     .then(response => {
+        // Un jeu tout juste ajouté n'a pas encore de ligne en base
         const dls = response.downloadCount;
-        $('#nbDls').html('   ' + dls);
+        $('#nbDls').html('   ' + (dls === undefined || dls === null ? 0 : dls));
     })
     .catch(error => {
         console.error('Error:', error);
@@ -315,15 +354,32 @@ function goHome() {
 
 
 
+// Compte les captures réellement livrées pour un projet, plutôt que d'en supposer
+// trois : certains jeux en ont plus (Dragon Slayer en a 5), d'autres moins
+function countProjectPictures(id, game)
+{
+	let count = 0;
+
+	// Plafonné à 9 : au-delà, l'index ne tiendrait plus sur un caractère
+	while (count < 9 && fs.existsSync(path.join(__dirname, 'images', 'projets', id + game + (count + 1) + '.png')))
+		count++;
+
+	return count;
+}
+
 // Change l'image affichée ; mettre un nombre négatif pour afficher l'image précédente
 function changeImage(num = 1)
 {
 	event.stopPropagation();
+
+	if(numberOfPictures <= 1) // Rien à faire défiler
+		return;
+
     numberPicture += num
 
     if(numberPicture <= 0)
-        numberPicture = 3;
-    else if(numberPicture >= 4)
+        numberPicture = numberOfPictures;
+    else if(numberPicture > numberOfPictures)
         numberPicture = 1
 
     let newImageURL = $('#gamePicture').attr("src").slice(0, -5) + numberPicture + $('#gamePicture').attr("src").slice(-4);
@@ -557,6 +613,14 @@ async function updateGUI(){
     
     $('#versionPatchInstalle').html('   ' + currentState.userVersion);
     $('#versionPatchDispo').html('   ' + gameLoaded['patchVersion']).css('color', color);
+
+	// Jeux rétro : rien à lancer, et pour ceux qu'on n'héberge pas encore le
+	// bouton ne fait qu'ouvrir la page du projet
+	if (gameLoaded['install']){
+		$('#installPatch').removeClass("disabled").html(
+			gameLoaded['install']['method'] === 'link' ? "Télécharger le patch" : "Traduire mes disquettes"
+		);
+	}
 	
 	
 }
@@ -564,10 +628,13 @@ async function updateGUI(){
 function updateCurrentState(){
     let hasVoice = false
 	let vp = null
-	if ('voicesFilenames' in gameLoaded)
+	// Les accolades manquaient : isVoicePatchInstalled() tournait même pour les
+	// jeux sans doublage, sur un installationPath qui pouvait être nul
+	if ('voicesFilenames' in gameLoaded){
 		hasVoice = true
 		vp = isVoicePatchInstalled();
-		
+	}
+
 	let releaseDate = "";
 	
 	let userVersion = "Aucune"
@@ -662,7 +729,9 @@ async function downloadAndExtractZip(name, ID, gaugeObject, outputFolder) {
 		if (currentDir.endsWith('.asar'))
 			currentDir = path.dirname(currentDir); //in a portable build dirrname is an archive so the download will fail
 		
-        const zipFilePath = currentDir + directorySeparator + ID;
+		// ID peut contenir un sous-dossier ("Asteka/patch_asteka_fr.zip") : on ne
+		// garde que le nom du fichier, le dossier distant n'existe pas en local
+        const zipFilePath = path.join(currentDir, path.basename(ID));
 
         let seconds = 0.0;
         let inter = setInterval(() => {
@@ -1077,6 +1146,12 @@ async function getFetch(url, method = "POST", args = {}, json = true, asy = fals
         type: method,
         data: args,
         async: asy,
+        // Le serveur n'envoie pas de Cache-Control sur config.json / projects.json :
+        // sans ça, Chromium garde sa copie pendant des semaines (fraîcheur
+        // heuristique) et les joueurs ne voient pas les nouveaux patchs.
+        // On force donc une revalidation à chaque lancement.
+        cache: false,
+        headers: { 'Cache-Control': 'no-cache' },
         dataType: json ? 'json' : undefined // Ensures response is parsed as JSON
     }).catch(function(error){
         return { error: { code: error.status } }; // Return the error in a standard object format
@@ -1237,6 +1312,29 @@ async function installUpdate() {
 }
 
 
+// Échappe les caractères problématiques dans un attribut HTML (les noms de jeu
+// contiennent des apostrophes : "Demon's Ring")
+function escapeHtml(text){
+	return String(text)
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#39;');
+}
+
+// Affiché à la place de openProject() pour les jeux annoncés mais pas encore sortis
+function comingSoon(type = "trails", id = "Sky", game = 0){
+	const soonGame = projectsList[type][id]['games'][game];
+	const defaultText = 'La traduction de <b>' + escapeHtml(soonGame['name']) + '</b> est en cours.<br><br>'
+		+ 'Elle apparaîtra ici dès qu\'elle sera disponible !';
+
+	// Le titre est partagé avec showUnknownDumps(), on le remet en place
+	document.querySelector('#soonWindow h2').innerHTML = 'Bientôt !';
+	document.getElementById('soonText').innerHTML = soonGame['comingSoonText'] || defaultText;
+	openWindow('soonWindow');
+}
+
 function openWindow(windowID){
 	document.getElementById(windowID).style.display = 'flex';
 }
@@ -1249,7 +1347,7 @@ function changeImageByPath(imagePath) {
 
 //demandé par Aisoce : toutes les popup qui sont juste informatives, on doit pouvoir les fermer en cliquant dans le vide
 window.onclick = function(event) {
-  var modalIds = ["popupContainer","HelpWindow", "InfoWindow","errorwindow","gamePictureModal"];
+  var modalIds = ["popupContainer","HelpWindow", "InfoWindow","errorwindow","gamePictureModal","soonWindow"];
 
   for (var i = 0; i < modalIds.length; i++) {
     var modal = document.getElementById(modalIds[i]);
@@ -1264,7 +1362,32 @@ window.onclick = function(event) {
 function openinDefaultBrowser(url) {
     shell.openExternal(url);
 }
+
+// Le bouton "Consulter le manuel" de index.html : "manual" vaut soit une URL,
+// soit le nom d'un fichier livré dans doc/
+function openManual() {
+	const manual = gameLoaded['manual'];
+	if (!manual)
+		return;
+
+	if (/^https?:\/\//.test(manual))
+		openinDefaultBrowser(manual);
+	else
+		shell.openPath(path.join(__dirname, 'doc', manual));
+}
 function onChangePath() {
+	// Jeux rétro : le joueur désigne des fichiers, pas un dossier d'installation
+	if (gameLoaded && gameLoaded['install']) {
+		if (retroFiles.length === 0)
+			$('.filePath').removeClass("okPath").addClass("noPath").html("Aucune image disque sélectionnée");
+		else if (retroFiles.length === 1)
+			$('.filePath').removeClass("noPath").addClass("okPath").html(retroFiles[0]);
+		else
+			$('.filePath').removeClass("noPath").addClass("okPath").html(retroFiles.length + " images disque sélectionnées");
+
+		return;
+	}
+
     // Now you have the selected folder path
 	try {
 		if (installationPath) {
@@ -1291,6 +1414,13 @@ function onChangeCheckbox() {
 }
 
 function playButton() {
+	// Les jeux rétro patchent les images disque du joueur : pas de dossier
+	// d'installation, pas d'exécutable à lancer, on part sur un autre flux
+	if (gameLoaded['install']) {
+		installRetroPatch();
+		return;
+	}
+
 	removeTheAbomination();
 	currentPath = $('.filePath').html();
 	try{
@@ -1318,6 +1448,255 @@ function playButton() {
 	{
 		downloadFiles();
 	}
+}
+
+// ===========================================================================
+// Jeux rétro (PC-8801)
+// ===========================================================================
+// Ici il n'y a pas de dossier d'installation : le joueur fournit ses propres
+// images disque (.d88/.t88) et on les traduit sur place, en écrivant une copie
+// à côté de l'original (on n'écrase jamais le dump du joueur).
+//
+// Deux mécaniques coexistent selon les jeux, décrites par le bloc "install"
+// de projects.json :
+//
+//   "method": "xdelta"  l'archive contient un .xdelta par version connue du
+//                       dump ; on identifie celle du joueur par le SHA-1 de
+//                       son fichier et on applique le bon patch (Asteka a 7
+//                       versions, Xanadu 7 réparties sur 2 disquettes)
+//   "method": "exec"    l'archive embarque son propre patcheur autonome
+//                       (Dragon Slayer et son dsretrack.exe), on le lance
+//
+// Tout est piloté par les données : ajouter un jeu rétro ou une version de
+// dump ne demande qu'une modification de projects.json, pas de rebuild.
+
+const crypto = require('crypto');
+
+var retroFiles = []; // Les images disque sélectionnées par le joueur
+
+// xdelta3 est embarqué : à côté des sources en dev, dans les ressources une
+// fois l'application empaquetée
+function getXdelta3Path(){
+	const candidates = [
+		path.join(process.resourcesPath || '', 'bin', 'xdelta3.exe'),
+		path.join(__dirname, 'bin', 'xdelta3.exe')
+	];
+
+	return candidates.find(candidate => fs.existsSync(candidate)) || null;
+}
+
+function sha1OfFile(filePath){
+	return new Promise((resolve, reject) => {
+		const hash = crypto.createHash('sha1');
+		const stream = fs.createReadStream(filePath);
+
+		stream.on('data', chunk => hash.update(chunk));
+		stream.on('error', reject);
+		stream.on('end', () => resolve(hash.digest('hex').toUpperCase()));
+	});
+}
+
+// Les SHA-1 des lisez-moi sont écrits en majuscules, mais autant ne pas en dépendre
+function findVariant(variants, sha1){
+	const wanted = String(sha1).toUpperCase();
+	const key = Object.keys(variants || {}).find(candidate => candidate.toUpperCase() === wanted);
+
+	return key ? variants[key] : null;
+}
+
+function runProcess(command, args, workingDirectory){
+	return new Promise((resolve, reject) => {
+		const child = spawn(command, args, { cwd: workingDirectory });
+		let errorOutput = '';
+
+		child.stderr.on('data', data => { errorOutput += data.toString(); });
+		child.on('error', reject);
+		child.on('close', code => {
+			if (code === 0)
+				resolve();
+			else
+				reject(new Error(path.basename(command) + ' a échoué (code ' + code + ') ' + errorOutput.trim()));
+		});
+	});
+}
+
+// On écrit à côté de l'original : Asteka.d88 -> Asteka [FR].d88
+function buildRetroOutputName(diskFile, suffix){
+	const extension = path.extname(diskFile);
+	const base = path.basename(diskFile, extension);
+
+	return path.join(path.dirname(diskFile), base + (suffix || ' [FR]') + extension);
+}
+
+// Applique le .xdelta correspondant à chaque image disque fournie
+async function applyRetroXdeltas(recipe, workFolder, gaugeObject){
+	const xdelta3 = getXdelta3Path();
+	if (!xdelta3)
+		throw new Error("xdelta3 est introuvable dans l'installateur.");
+
+	const patched = [];
+	const unknown = [];
+
+	for (const diskFile of retroFiles){
+		gaugeObject.html('Identification de ' + path.basename(diskFile) + '...');
+		const sha1 = await sha1OfFile(diskFile);
+
+		// Le même SHA-1 est cherché parmi toutes les disquettes de la recette :
+		// le joueur peut donc sélectionner ses disquettes dans n'importe quel ordre
+		let match = null;
+		for (const target of (recipe['targets'] || [])){
+			const variant = findVariant(target['variants'], sha1);
+			if (variant){
+				match = { target: target, patch: variant };
+				break;
+			}
+		}
+
+		if (!match){
+			unknown.push({ file: diskFile, sha1: sha1 });
+			continue;
+		}
+
+		const patchFile = path.join(workFolder, match.patch);
+		if (!fs.existsSync(patchFile))
+			throw new Error(match.patch + " est absent de l'archive du patch.");
+
+		const outputFile = buildRetroOutputName(diskFile, match.target['suffix']);
+		gaugeObject.html('Traduction de ' + path.basename(diskFile) + '...');
+		await applyXdelta(xdelta3, patchFile, diskFile, outputFile);
+
+		patched.push({ output: outputFile, label: match.target['label'] || '' });
+	}
+
+	return { patched: patched, unknown: unknown };
+}
+
+function applyXdelta(xdelta3, patchFile, sourceFile, outputFile){
+	// -d décode, -f écrase la sortie d'un essai précédent, -s désigne l'original
+	return runProcess(xdelta3, ['-d', '-f', '-s', sourceFile, patchFile, outputFile], path.dirname(patchFile));
+}
+
+// Certains patchs (Dragon Slayer) embarquent leur propre outil de traduction
+async function runRetroPatcher(recipe, workFolder, gaugeObject){
+	const patcher = path.join(workFolder, recipe['command']);
+	if (!fs.existsSync(patcher))
+		throw new Error(recipe['command'] + " est absent de l'archive du patch.");
+
+	const patched = [];
+
+	for (const diskFile of retroFiles){
+		gaugeObject.html('Traduction de ' + path.basename(diskFile) + '...');
+		await runProcess(patcher, [diskFile], path.dirname(patcher));
+		patched.push({ output: path.dirname(diskFile), label: recipe['label'] || '' });
+	}
+
+	return { patched: patched, unknown: [] };
+}
+
+// Manuels, FAQ, font.rom... : tout ce qui accompagne le patch est déposé dans
+// un dossier à côté des images disque du joueur
+function copyRetroExtras(recipe, workFolder){
+	const extras = recipe['extras'] || [];
+	if (extras.length === 0 || retroFiles.length === 0)
+		return null;
+
+	const destination = path.join(path.dirname(retroFiles[0]), gameLoaded['name'] + ' [FR]');
+	fs.mkdirSync(destination, { recursive: true });
+
+	for (const extra of extras){
+		const source = path.join(workFolder, extra);
+		if (fs.existsSync(source))
+			fs.copyFileSync(source, path.join(destination, path.basename(extra)));
+	}
+
+	return destination;
+}
+
+async function installRetroPatch(){
+	const recipe = gameLoaded['install'];
+	const gaugeObject = $('#projectBar');
+	const workFolder = path.join(filepath, 'Liberl News', 'retro');
+
+	// Patchs pas encore hébergés chez nous : on renvoie vers la page du projet
+	if (recipe['method'] === 'link'){
+		openinDefaultBrowser(recipe['url']);
+		return;
+	}
+
+	if (retroFiles.length === 0){
+		gaugeObject.html("Sélectionnez d'abord votre image disque (.d88).").css('background', '#ff000080');
+		return;
+	}
+
+	if (busy)
+		return;
+
+	busy = true;
+	$('#installPatch').addClass('disabled');
+	drawGauge(0, gaugeObject);
+
+	try {
+		// On repart d'un dossier de travail vide pour ne pas mélanger deux jeux
+		fs.rmSync(workFolder, { recursive: true, force: true });
+		fs.mkdirSync(workFolder, { recursive: true });
+
+		const downloaded = await downloadAndExtractZip('patch', recipe['archive'], gaugeObject, workFolder);
+		if (!downloaded)
+			return; // downloadAndExtractZip a déjà affiché la raison dans la jauge
+
+		const result = (recipe['method'] === 'exec')
+			? await runRetroPatcher(recipe, workFolder, gaugeObject)
+			: await applyRetroXdeltas(recipe, workFolder, gaugeObject);
+
+		const extrasFolder = copyRetroExtras(recipe, workFolder);
+
+		if (result.patched.length === 0){
+			// Aucun SHA-1 reconnu : c'est le cas le plus courant d'échec, on
+			// explique quoi faire plutôt que d'afficher une erreur sèche
+			showUnknownDumps(result.unknown, gaugeObject);
+			return;
+		}
+
+		drawGauge(100, gaugeObject);
+		let message = result.patched.length + ' fichier(s) traduit(s) !';
+		if (result.unknown.length > 0)
+			message += ' (' + result.unknown.length + ' non reconnu(s))';
+		gaugeObject.html(message);
+
+		dataUser['projects'][gameLoaded['name']] = dataUser['projects'][gameLoaded['name']] || {};
+		dataUser['projects'][gameLoaded['name']]['patch'] = gameLoaded['patchVersion'];
+		writeConfig();
+		incrementDownloadCount(gameLoaded['name']);
+
+		$('#versionPatchInstalle').html('   ' + gameLoaded['patchVersion']);
+
+		// On ouvre le dossier pour que le joueur voie tout de suite le résultat
+		shell.openPath(extrasFolder || path.dirname(result.patched[0].output));
+	}
+	catch (error) {
+		console.error(error);
+		gaugeObject.html('Erreur : ' + error.message).css('background', '#ff000080');
+	}
+	finally {
+		busy = false;
+		$('#installPatch').removeClass('disabled');
+		fs.rmSync(workFolder, { recursive: true, force: true });
+	}
+}
+
+function showUnknownDumps(unknown, gaugeObject){
+	gaugeObject.html("Version du jeu non reconnue.").css('background', '#ff000080');
+
+	const hashes = unknown.map(entry => path.basename(entry.file) + ' : ' + entry.sha1).join('<br>');
+	document.getElementById('soonText').innerHTML =
+		"Aucun patch ne correspond au(x) fichier(s) fourni(s).<br><br>"
+		+ "Il existe plusieurs versions de ces jeux : vérifiez que votre dump "
+		+ "correspond bien à une version couverte par le patch, et qu'il ne "
+		+ "contient pas plusieurs disquettes réunies dans un seul fichier.<br><br>"
+		+ "<b>Empreintes SHA-1 de vos fichiers :</b><br>" + hashes + "<br><br>"
+		+ "Vous pouvez les communiquer à l'équipe sur le Discord.";
+	document.querySelector('#soonWindow h2').innerHTML = 'Version non reconnue';
+	openWindow('soonWindow');
 }
 
 let markersCreated = false;
@@ -1744,15 +2123,29 @@ function createClassicMenu(games_id){ //games = retro ou trails
 		let games = "";
 	
 		Object.entries(value['games']).forEach(([keyGame, valueGame]) => {
-			
-			if(valueGame['patchVersion'] != '0') // Si un patch est disponible, on l'affiche
+
+			const isAvailable = valueGame['patchVersion'] != '0'; // Un patch est disponible
+			// Un jeu sans patch peut quand même être annoncé : icône grisée, clic = popup "Bientôt !"
+			const isComingSoon = !isAvailable && valueGame['comingSoon'] === true;
+
+			if(isAvailable || isComingSoon)
 			{
 				let imageURL = "https://cdn.akamai.steamstatic.com/steam/apps/" + valueGame['steamId'] + "/header.jpg";
 				if(valueGame['steamId'] == -1) // Si le jeu est un jeu nom Steam, honte à vous ! Et on va chercher son image dans le dossier "images"
-					imageURL = "images/" + valueGame['name'] + ".png";
-					
-				games = games + '<img class="game-icon" onclick="openProject(\''+games_id+'\', \'' + key + '\', \'' + keyGame + '\')" src="' + imageURL + '">';
-				if(dataUser['projects'][valueGame["name"]] === undefined) // Si le projet n'existe pas dans les infos utilisateurs, on le créé
+					// "image" permet de donner un nom de fichier différent du nom du jeu
+					// (utile quand celui-ci contient une espace ou une apostrophe)
+					imageURL = "images/" + (valueGame['image'] || valueGame['name']) + ".png";
+
+				const action = isComingSoon ? 'comingSoon' : 'openProject';
+				const extraClass = isComingSoon ? ' soon' : '';
+				const tooltip = isComingSoon ? escapeHtml(valueGame['name']) + ' — bientôt !' : escapeHtml(valueGame['name']);
+
+				// onerror : tant qu'un jeu n'a pas sa jaquette dans images/, on
+				// affiche un visuel neutre plutôt qu'une image cassée qui casse la grille
+				games = games + '<img class="game-icon' + extraClass + '" title="' + tooltip + '"'
+					+ ' onerror="this.onerror=null;this.src=\'images/projets/dummy.png\'"'
+					+ ' onclick="' + action + '(\''+games_id+'\', \'' + key + '\', \'' + keyGame + '\')" src="' + imageURL + '">';
+				if(isAvailable && dataUser['projects'][valueGame["name"]] === undefined) // Si le projet n'existe pas dans les infos utilisateurs, on le créé
 					dataUser['projects'][valueGame["name"]] = {"patch": null, "voice": null};
 			}
 		});
@@ -1791,13 +2184,15 @@ function selectFolder() {
   let showDialog;
   
   if (gameLoaded["fileFormat"]) {
-    // --- Sélection de fichier ---
+    // --- Sélection d'images disque ---
+    // Multi-sélection : Xanadu se joue avec deux disquettes à patcher, et on
+    // retrouve laquelle est laquelle grâce à leur SHA-1
     showDialog = dialog.showOpenDialogSync({
-      title: "Sélectionnez un fichier",
+      title: "Sélectionnez votre ou vos images disque",
       filters: [
-        { name: "Fichiers valides", extensions: gameLoaded["fileFormat"].map(ext => ext.replace('.', '')) }
+        { name: "Images disque", extensions: gameLoaded["fileFormat"].map(ext => ext.replace('.', '')) }
       ],
-      properties: ['openFile']
+      properties: ['openFile', 'multiSelections']
     });
   } else {
     // --- Sélection de dossier ---
@@ -1809,6 +2204,8 @@ function selectFolder() {
 
   if (showDialog && showDialog.length > 0) {
     installationPath = showDialog[0];
+    if (gameLoaded["fileFormat"])
+      retroFiles = showDialog.slice();
     console.log("✅ Chemin sélectionné :", installationPath);
   } else {
     console.log("❌ Aucune sélection effectuée.");

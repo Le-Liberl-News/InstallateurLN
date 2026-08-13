@@ -1,0 +1,27 @@
+xdelta3.exe
+===========
+
+Ce dossier reçoit xdelta3, utilisé pour appliquer les patchs des jeux rétro
+(PC-8801) aux images disque fournies par le joueur.
+
+Le binaire n'est PAS versionné dans ce dépôt : il est téléchargé depuis la
+release officielle par le script scripts/fetch-xdelta3.js, lancé
+automatiquement avant "npm start" et "npm run build".
+
+Pour le récupérer à la main :
+    node scripts/fetch-xdelta3.js
+
+Source officielle :
+    https://github.com/jmacd/xdelta-gpl/releases/tag/v3.1.0
+    xdelta3-3.1.0-x86_64.exe.zip
+
+Licence
+-------
+xdelta3 est distribué sous licence GNU GPL version 2. Il est lancé par
+l'installateur comme un programme séparé (aucun code n'est lié au nôtre).
+
+En le redistribuant avec l'installateur, nous devons proposer son code source
+aux utilisateurs. Il reste disponible à l'adresse ci-dessus, ainsi que dans
+l'archive xdelta3-3.1.0.tar.gz de la même release.
+
+Copyright (C) Joshua MacDonald

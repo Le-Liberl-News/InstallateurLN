@@ -11,6 +11,27 @@ const remoteMain = require('@electron/remote/main');
 
 remoteMain.initialize();
 
+// Mise à jour automatique (build NSIS uniquement : la version portable ne peut
+// pas se remplacer elle-même). electron-updater va chercher la dernière release
+// GitHub et ne télécharge que le différentiel, l'utilisateur n'a plus à
+// re-télécharger l'installateur complet à chaque version.
+const checkForUpdates = () => {
+    try {
+        const { autoUpdater } = require('electron-updater');
+
+        autoUpdater.autoDownload = true;
+        autoUpdater.on('error', err => console.log("Mise à jour impossible :", err.message));
+        autoUpdater.on('update-downloaded', () => {
+            // On installe au prochain démarrage pour ne pas couper un téléchargement de patch en cours
+            autoUpdater.autoInstallOnAppQuit = true;
+        });
+        autoUpdater.checkForUpdates();
+    }
+    catch (err) {
+        console.log("Vérification des mises à jour ignorée :", err.message);
+    }
+};
+
 const loadMainWindow = async () => {
 
     // Permet d'obtenir un effet 16:9 adapté à la taille de la résolution de l'utilisateur
@@ -31,6 +52,16 @@ const loadMainWindow = async () => {
         }
     });
 
+    // Les erreurs de la page arrivent dans la console du terminal : indispensable
+    // pour diagnostiquer un écran blanc sans avoir à ouvrir les outils de dev
+    mainWindow.webContents.on('console-message', (...args) => {
+        const details = args[0];
+        if (details && typeof details === 'object' && 'message' in details)
+            console.log('[page] ' + details.message + ' (' + details.sourceId + ':' + details.lineNumber + ')');
+        else
+            console.log('[page] ' + args[2] + ' (' + args[4] + ':' + args[3] + ')');
+    });
+
     mainWindow.removeMenu(); // Pas de "Menu", "Options" etc...
 	remoteMain.enable(mainWindow.webContents);
     mainWindow.setTitle("Installateur - Liberl News - Version " + config["version"]);
@@ -40,6 +71,7 @@ const loadMainWindow = async () => {
 
 app.on("ready", () => {
     loadMainWindow();
+    checkForUpdates();
 });
 
 ipcMain.handle('exit', async () => {

@@ -1,24 +1,27 @@
 {
   "name": "setupliberlnews",
-  "version": "1.0.4",
+  "version": "1.1.0",
   "description": "Installateur de patchs pour l'équipe du Liberl News",
   "main": "index.js",
   "bin": "./index.js",
   "scripts": {
     "test": "test",
+    "prestart": "node scripts/fetch-xdelta3.js",
     "start": "electron .",
-    "build": "electron-builder"
+    "prebuild": "node scripts/fetch-xdelta3.js",
+    "build": "electron-builder",
+    "release": "electron-builder --publish always"
   },
   "author": "Schneitizel S. Sekai",
   "license": "ISC",
   "devDependencies": {
-    "electron": "^22.3.27",
-    "electron-builder": "^24.12.0",
-    "electron-packager": "^17.1.2"
+    "electron": "^38.8.6",
+    "electron-builder": "^25.1.8"
   },
   "dependencies": {
-    "@electron/remote": "^2.0.1",
+    "@electron/remote": "^2.1.3",
     "bluebird": "^3.7.2",
+    "electron-updater": "^6.8.9",
     "jquery": "^3.7.1",
     "node-fetch": "^2.6.7",
     "node-stream-zip": "^1.15.0",
@@ -32,6 +35,14 @@
     "directories": {
       "output": "dist"
     },
+    "compression": "maximum",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Le-Liberl-News",
+        "repo": "InstallateurLN"
+      }
+    ],
     "files": [
       "index.js",
       "functions.js",
@@ -39,18 +50,47 @@
       "loading.html",
       "jquery.min.js",
       "config.json",
+      "projects.json",
       "doc/*",
       "css/*",
       "audio/**/*",
       "images/**/*",
-      "index.html"
+      "index.html",
+      "!images/wp.gif",
+      "!images/menu_icon.pdn"
+    ],
+    "extraResources": [
+      {
+        "from": "bin",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "portable": {
       "useZip": true,
       "splashImage": "./images/splash.bmp"
     },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Installateur du Liberl News",
+      "artifactName": "Installateur-du-Liberl-News-Setup-${version}.${ext}",
+      "deleteAppDataOnUninstall": false
+    },
     "win": {
+      "icon": "icon.ico",
       "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
         {
           "target": "portable",
           "arch": [
