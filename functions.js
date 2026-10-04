@@ -285,7 +285,19 @@ function openProject(type = "trails", id = "Sky", game = 0)
 	onChangePath();
 	updateCurrentState(); // on actualise l'état
 	updateGUI();
-	
+
+	// Patch publié en release GitHub (The 3rd) : la version proposée est celle
+	// de la dernière release
+	if (gameLoaded['deltaRelease']){
+		const opened = gameLoaded;
+		refreshDeltaRelease().then(() => {
+			if (gameLoaded !== opened)
+				return;
+			updateCurrentState();
+			updateGUI();
+		});
+	}
+
     setTimeout(function(){
         $('.displayGame').css('display', 'block').animate({
         opacity: 1
@@ -638,8 +650,11 @@ function updateCurrentState(){
 	let releaseDate = "";
 	
 	let userVersion = "Aucune"
-	if (installationPath !== null){
-		
+	if (installationPath !== null && gameLoaded['deltaRelease']){
+		userVersion = installedDeltaVersion() || "Aucune";
+	}
+	else if (installationPath !== null){
+
 		const versions_path = installationPath + "/data_fr/system/versions.json";
 		
 		if(fs.existsSync(versions_path)){
@@ -679,6 +694,10 @@ function updateCurrentState(){
 	}
 	if (userVersion == "Aucune"){
 		state.patchState = 1;
+	}
+	else if (gameLoaded['deltaRelease']){
+		// Versions datées (2026.10.04-1656) : seule l'égalité compte
+		state.patchState = (userVersion === availableVersion) ? 0 : 2;
 	}
 	else {
 		if (compare == 1){
@@ -793,7 +812,15 @@ async function uninstall() {
     if($('#uninstallAll').hasClass('disabled'))
         return;
 	$('#uninstallAll').addClass("disabled");
-	
+
+	if (gameLoaded['deltaRelease']){
+		restoreDeltaRelease($('#projectBar'));
+		$('#uninstallAll').removeClass("disabled");
+		updateCurrentState();
+		updateGUI();
+		return;
+	}
+		
     const paths = gameLoaded['toBeUninstalled']
 	var countFile = 0;
 	for (var filePath of paths) {
@@ -985,8 +1012,13 @@ async function downloadFiles() {
 	
 	let result = true;
     // On obtient d'abord les infos du fichier, tel que son nom et son poids
-	if ((!currentState.isThereACountdown) && (currentState.patchState != 0)){
-		
+	if ((!currentState.isThereACountdown) && (currentState.patchState != 0) && gameLoaded['deltaRelease']){
+		result = await installDeltaRelease($('#projectBar'));
+		if (result)
+			incrementDownloadCount(gameLoaded['name']);
+	}
+	else if ((!currentState.isThereACountdown) && (currentState.patchState != 0)){
+
 		for (let i = 0; i < gameLoaded['patchFilenames'].length; i++) {
 			const filename = gameLoaded['patchFilenames'][i];
 			result = result && await downloadAndExtractZip("patch", filename, $('#projectBar'), $('.filePath').html());
@@ -1010,6 +1042,7 @@ async function downloadFiles() {
 	}
 	
     // On enregistre la version du patch installé ; on sauvegarde aussi les infos utilisateur en local (Dans %APPDATA%/config.json)
+    dataUser['projects'][gameLoaded['name']] = dataUser['projects'][gameLoaded['name']] || {};
     dataUser['projects'][gameLoaded['name']]['patch'] = gameLoaded['patchVersion'];
     writeConfig();
 
@@ -1021,8 +1054,9 @@ async function downloadFiles() {
 	if (result){
 		drawGauge(100,$('#projectBar'));
 		$('#projectBar').html('Patch téléchargé et installé !');
-	
+
 	}
+	busy = false;
     
 
     // On a terminé ! Bravo !
@@ -1215,17 +1249,20 @@ function getGivenGame(game) {
 				i++;
 			}
 	}
-	if (list.length == 0){
-		const gogRegistryKey = `HKEY_LOCAL_MACHINE\\SOFTWARE\\GOG.com\\Games\\${game['GOGId']}`;
-		const gogInstallationPath = getRegistryValue(gogRegistryKey, 'path');
-
-		if (gogInstallationPath !== null) {
-			list.push(gogInstallationPath)
-		} else {
-			list.push("C:\\Program Files\\" + game['steamFolderName']);
-			list.push("C:\\Program Files (x86)\\" + game['steamFolderName']);
+	// GOG aussi, même quand Steam est installé (le jeu peut n'être que sur GOG) ;
+	// GOG s'enregistre dans la vue 32 bits du registre (WOW6432Node)
+	if (game['GOGId']){
+		for (const gogRegistryKey of [
+			`HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\GOG.com\\Games\\${game['GOGId']}`,
+			`HKEY_LOCAL_MACHINE\\SOFTWARE\\GOG.com\\Games\\${game['GOGId']}`
+		]) {
+			const gogInstallationPath = getRegistryValue(gogRegistryKey, 'path');
+			if (gogInstallationPath !== null)
+				list.push(gogInstallationPath);
 		}
 	}
+	list.push("C:\\Program Files\\" + game['steamFolderName']);
+	list.push("C:\\Program Files (x86)\\" + game['steamFolderName']);
   } else {
 		
 		const vdfFilePath = 'Z:\\home\\deck\\.local\\share\\Steam\\steamapps\\libraryfolders.vdf';
@@ -1447,6 +1484,196 @@ function playButton() {
 	else
 	{
 		downloadFiles();
+	}
+}
+
+// ===========================================================================
+// Patchs publiés en release GitHub (The 3rd)
+// ===========================================================================
+// Le dépôt est public : aucun jeton. La release contient un .xdelta par fichier
+// modifié et patch.json (empreinte SHA-256 du fichier anglais attendu et du
+// fichier français obtenu). Les fichiers anglais du joueur sont copiés une
+// fois dans dat_en, et chaque version s'applique à eux : on passe donc de
+// n'importe quelle version à n'importe quelle autre, et désinstaller remet
+// simplement dat_en en place. Aucun fichier du jeu n'est téléchargé.
+//
+// projects.json : "deltaRelease": {"repository": "Le-Liberl-News/Patch3rd"}
+
+function deltaEnglishFolder(){
+	return installationPath + directorySeparator + (gameLoaded['deltaRelease']['englishFolder'] || 'dat_en');
+}
+
+// La version installée est notée dans dat_en/patch.json
+function installedDeltaVersion(){
+	try {
+		const state = JSON.parse(fs.readFileSync(path.join(deltaEnglishFolder(), 'patch.json'), 'utf8'));
+		return state['version'] || null;
+	}
+	catch (error) {
+		return null;
+	}
+}
+
+// Dernière release du dépôt (les versions de test sont des pré-releases :
+// /releases/latest les ignore, on prend la plus récente de la liste)
+async function refreshDeltaRelease(){
+	const repository = gameLoaded['deltaRelease']['repository'];
+	try {
+		const response = await fetch(`https://api.github.com/repos/${repository}/releases?per_page=1`, {
+			headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'InstallateurLN' }
+		});
+		const releases = await response.json();
+		const release = Array.isArray(releases) ? releases[0] : null;
+		const asset = release ? (release['assets'] || []).find(item => item['name'].endsWith('.zip')) : null;
+		if (asset){
+			gameLoaded['patchVersion'] = release['tag_name'].replace(/^v/, '');
+			gameLoaded['deltaAsset'] = asset['browser_download_url'];
+			gameLoaded['deltaSize'] = asset['size'];
+		}
+	}
+	catch (error) {
+		console.log('Release introuvable : ' + error.message);
+	}
+}
+
+function sha256OfFile(filePath){
+	return new Promise((resolve, reject) => {
+		if (!fs.existsSync(filePath))
+			return resolve('');
+		const hash = crypto.createHash('sha256');
+		fs.createReadStream(filePath)
+			.on('data', chunk => hash.update(chunk))
+			.on('error', reject)
+			.on('end', () => resolve(hash.digest('hex')));
+	});
+}
+
+// Fenêtre source couvrant tout l'original (même règle que scripts/release.py
+// de Patch3rd) : une archive de 640 Mo se décode d'un seul tenant
+function xdeltaWindow(size){
+	const mb = 1024 * 1024;
+	return Math.max(64 * mb, Math.floor((size + mb) / mb) * mb);
+}
+
+async function downloadToFile(url, destination, gaugeObject){
+	const response = await fetch(url);
+	if (!response.ok)
+		throw new Error('téléchargement refusé (' + response.status + ')');
+	const total = parseInt(response.headers.get('Content-Length') || '0', 10);
+	let written = 0;
+	await new Promise((resolve, reject) => {
+		const output = fs.createWriteStream(destination);
+		response.body.on('data', chunk => {
+			written += chunk.length;
+			if (total){
+				drawGauge(written / total * 100, gaugeObject);
+				gaugeObject.html('Téléchargement du patch : ' + (written / total * 100).toFixed(0) + '% (' + formatBytes(total) + ')');
+			}
+		});
+		response.body.on('error', reject);
+		output.on('finish', resolve);
+		output.on('error', reject);
+		response.body.pipe(output);
+	});
+}
+
+async function installDeltaRelease(gaugeObject){
+	busy = true;
+	const work = fs.mkdtempSync(path.join(os.tmpdir(), 'liberl-patch-'));
+	try {
+		if (!gameLoaded['deltaAsset'])
+			await refreshDeltaRelease();
+		if (!gameLoaded['deltaAsset'])
+			throw new Error('aucune version du patch n\'est publiée pour l\'instant');
+		const xdelta3 = getXdelta3Path();
+		if (!xdelta3)
+			throw new Error("xdelta3 est introuvable dans l'installateur");
+
+		const archive = path.join(work, 'patch.zip');
+		await downloadToFile(gameLoaded['deltaAsset'], archive, gaugeObject);
+		const extracted = path.join(work, 'patch');
+		fs.mkdirSync(extracted);
+		gaugeObject.html('Décompression...');
+		await fct(archive, extracted, gaugeObject);
+		const manifest = JSON.parse(fs.readFileSync(path.join(extracted, 'patch.json'), 'utf8'));
+
+		const english = deltaEnglishFolder();
+		fs.mkdirSync(english, { recursive: true });
+		const failures = [];
+		const files = manifest['files'];
+		for (let i = 0; i < files.length; i++){
+			const file = files[i];
+			const destination = path.join(installationPath, file['file']);
+			const saved = path.join(english, file['file']);
+			drawGauge(i / files.length * 100, gaugeObject);
+			gaugeObject.html('Installation : ' + file['file'] + ' (' + (i + 1) + '/' + files.length + ')');
+
+			// L'anglais d'origine : déjà dans dat_en, sinon le fichier du jeu
+			// s'il est encore anglais (copié alors dans dat_en)
+			if (await sha256OfFile(saved) !== file['original_sha256']){
+				if (await sha256OfFile(destination) !== file['original_sha256']){
+					failures.push(file['file']);
+					continue;
+				}
+				fs.copyFileSync(destination, saved);
+			}
+			if (await sha256OfFile(destination) === file['patched_sha256'])
+				continue;
+
+			const temporary = destination + '.fr.tmp';
+			await runProcess(xdelta3, ['-d', '-f', '-B', String(xdeltaWindow(fs.statSync(saved).size)),
+				'-s', saved, path.join(extracted, file['delta']), temporary], extracted);
+			if (await sha256OfFile(temporary) !== file['patched_sha256']){
+				fs.rmSync(temporary, { force: true });
+				failures.push(file['file']);
+				continue;
+			}
+			fs.renameSync(temporary, destination);
+		}
+
+		if (failures.length > 0){
+			gaugeObject.html('Fichiers non patchés (ni anglais d\'origine, ni sauvegardés dans dat_en) : '
+				+ failures.join(', ') + '. Vérifiez l\'intégrité des fichiers du jeu (Steam ou GOG), puis recommencez.')
+				.css('background', '#ff000080');
+			return false;
+		}
+		fs.writeFileSync(path.join(english, 'patch.json'), JSON.stringify({
+			'version': manifest['version'],
+			'files': files.map(file => file['file'])
+		}, null, 1));
+		return true;
+	}
+	catch (error) {
+		console.error(error);
+		gaugeObject.html('Erreur : ' + error.message).css('background', '#ff000080');
+		return false;
+	}
+	finally {
+		fs.rmSync(work, { recursive: true, force: true });
+		busy = false;
+	}
+}
+
+// Désinstallation : les fichiers anglais gardés dans dat_en reprennent leur place
+function restoreDeltaRelease(gaugeObject){
+	const english = deltaEnglishFolder();
+	if (!fs.existsSync(english)){
+		gaugeObject.html('Aucun fichier anglais sauvegardé (dat_en) : le jeu n\'a pas été patché par l\'installateur.');
+		return false;
+	}
+	try {
+		const names = fs.readdirSync(english).filter(name => name !== 'patch.json');
+		names.forEach((name, index) => {
+			fs.copyFileSync(path.join(english, name), path.join(installationPath, name));
+			drawGauge((index + 1) / names.length * 100, gaugeObject);
+		});
+		fs.rmSync(english, { recursive: true, force: true });
+		gaugeObject.html('Patch désinstallé : le jeu est de nouveau en anglais.');
+		return true;
+	}
+	catch (error) {
+		gaugeObject.html('Erreur : ' + error.message).css('background', '#ff000080');
+		return false;
 	}
 }
 
