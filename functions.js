@@ -223,6 +223,9 @@ function openProject(type = "trails", id = "Sky", game = 0)
 
     $('#gameName').html(gameName); // On remplace le nom dans l'en-tête par le nom du jeu
     $('#gameDesc').html(projectsList[type][id]['games'][game]['desc']); // On remplace la description sur la page par celle du jeu
+    // Un patch en cours de traduction le dit avant tout le reste
+    if (gameLoaded['warning'])
+        $('#gameDesc').prepend($('<div class="patchWarning">').html(gameLoaded['warning']));
     // On affiche la première image du projet, et on réinitialise son affichage
     numberOfPictures = countProjectPictures(id, game);
     $('#gamePicture').attr("src", numberOfPictures > 0 ? "images/projets/" + id + game + "1.png" : "images/projets/dummy.png");
@@ -928,6 +931,10 @@ async function downloadFiles() {
     // Si le bouton "Installer" est désactivé, on ne fait rien
     if($('#installPatch').hasClass('disabled'))
         return;
+	// Patch en cours de traduction : le joueur le confirme en connaissance de cause
+	if (gameLoaded['warning'] && (currentState.patchState != 0)
+		&& !confirm($('<div>').html(gameLoaded['warning']).text() + '\n\nInstaller quand même ?'))
+		return;
 	$('#projectBar').css("display", "block");
     $('#installPatch').addClass("disabled");
 	$('#uninstallAll').addClass("disabled");
@@ -1577,6 +1584,65 @@ async function downloadToFile(url, destination, gaugeObject){
 	});
 }
 
+// La version anglaise sur laquelle le patch de test de The 3rd est construit
+// (date de compilation de son ed6_win3.exe), pour les releases dont patch.json
+// ne l'indique pas encore.
+const DELTA_BASE_FALLBACK = { 'exe': 'ed6_win3.exe', 'built': '2022-02-24', 'timestamp': 1645723089 };
+
+// Fichiers du jeu qui ne sont ni l'anglais attendu (dans le jeu ou dans
+// dat_en) ni déjà cette version du patch : vérifiés avant toute modification.
+async function deltaMismatches(files, english, gaugeObject){
+	const mismatched = [];
+	for (let i = 0; i < files.length; i++){
+		const file = files[i];
+		gaugeObject.html('Vérification de la version du jeu : ' + file['file'] + ' (' + (i + 1) + '/' + files.length + ')');
+		drawGauge(i / files.length * 100, gaugeObject);
+		if (await sha256OfFile(path.join(english, file['file'])) === file['original_sha256'])
+			continue;
+		const current = await sha256OfFile(path.join(installationPath, file['file']));
+		if (current !== file['original_sha256'] && current !== file['patched_sha256'])
+			mismatched.push(file['file']);
+	}
+	return mismatched;
+}
+
+// Date de compilation d'un exécutable Windows (en-tête PE), ou null
+function peBuildDate(filePath){
+	try {
+		const data = fs.readFileSync(filePath);
+		const header = data.readUInt32LE(0x3C);
+		return new Date(data.readUInt32LE(header + 8) * 1000);
+	}
+	catch (error) {
+		return null;
+	}
+}
+
+// Ce que le joueur doit savoir quand ses fichiers ne sont pas ceux du patch :
+// rien n'a été modifié, et pourquoi (jeu plus récent, plus ancien ou modifié).
+async function deltaVersionMessage(manifest, mismatched){
+	const base = manifest['base'] && manifest['base']['timestamp'] ? manifest['base'] : DELTA_BASE_FALLBACK;
+	const baseDate = new Date(base['timestamp'] * 1000);
+	const day = date => date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+	const exe = peBuildDate(path.join(installationPath, base['exe']));
+	const sameDay = exe && Math.abs(exe - baseDate) < 24 * 3600 * 1000;
+	let reason;
+	if (exe && !sameDay && exe > baseDate)
+		reason = 'Votre jeu est <b>plus récent</b> que la version anglaise sur laquelle ce patch de test est construit : '
+			+ 'votre ' + base['exe'] + ' date du ' + day(exe) + ', celui du patch du ' + day(baseDate) + '. '
+			+ 'Ce n\'est pas un problème de votre côté : le patch sera mis à jour pour la dernière version du jeu. '
+			+ 'En attendant, il ne peut pas s\'installer sur la vôtre.';
+	else if (exe && !sameDay)
+		reason = 'Votre jeu est <b>plus ancien</b> que la version sur laquelle ce patch est construit (votre ' + base['exe']
+			+ ' date du ' + day(exe) + ', celui du patch du ' + day(baseDate) + '). Mettez le jeu à jour sur Steam ou GOG, puis recommencez.';
+	else
+		reason = 'Votre jeu est bien de la même version (' + day(baseDate) + '), mais certains de ses fichiers ont été modifiés '
+			+ '(autre patch, mod, ou fichiers abîmés). Vérifiez l\'intégrité des fichiers du jeu (Steam : Propriétés > Fichiers installés > '
+			+ 'Vérifier ; GOG Galaxy : Gérer l\'installation > Vérifier / Réparer), puis recommencez.';
+	return '<b>Le patch n\'a pas été installé : rien n\'a été modifié dans votre jeu.</b><br>' + reason
+		+ '<br><small>Fichiers concernés : ' + mismatched.join(', ') + '</small>';
+}
+
 async function installDeltaRelease(gaugeObject){
 	busy = true;
 	const work = fs.mkdtempSync(path.join(os.tmpdir(), 'liberl-patch-'));
@@ -1598,9 +1664,14 @@ async function installDeltaRelease(gaugeObject){
 		const manifest = JSON.parse(fs.readFileSync(path.join(extracted, 'patch.json'), 'utf8'));
 
 		const english = deltaEnglishFolder();
+		const files = manifest['files'];
+		const mismatched = await deltaMismatches(files, english, gaugeObject);
+		if (mismatched.length > 0){
+			gaugeObject.html(await deltaVersionMessage(manifest, mismatched)).css('background', '#ff000080');
+			return false;
+		}
 		fs.mkdirSync(english, { recursive: true });
 		const failures = [];
-		const files = manifest['files'];
 		for (let i = 0; i < files.length; i++){
 			const file = files[i];
 			const destination = path.join(installationPath, file['file']);
