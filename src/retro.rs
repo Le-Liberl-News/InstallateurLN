@@ -43,6 +43,8 @@ pub struct Recipe {
     pub method: Method,
     pub archive: String,
     pub command: String,
+    /// A patcher built into the installer, used on every system ("dsretrack": Dragon Slayer).
+    pub builtin: String,
     pub targets: Vec<Target>,
     pub extras: Vec<String>,
     /// Served by the platform from PatchRetro: its version, and where its files are.
@@ -76,14 +78,14 @@ impl Recipe {
             })
             .collect();
         let extras = value.get("extras").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
-        Some(Recipe { method, archive: text("archive"), command: text("command"), targets, extras, version: None, assets: None })
+        Some(Recipe { method, archive: text("archive"), command: text("command"), builtin: text("builtin"), targets, extras, version: None, assets: None })
     }
 
     /// Whether this installer can translate the floppies itself here.
     pub fn local(&self) -> bool {
         match self.method {
             Method::Xdelta => !self.archive.is_empty(),
-            Method::Exec => cfg!(windows) && !self.archive.is_empty() && !self.command.is_empty(),
+            Method::Exec => !self.archive.is_empty() && (self.builtin == "dsretrack" || (cfg!(windows) && !self.command.is_empty())),
             Method::Link => false,
         }
     }
@@ -219,6 +221,14 @@ fn run(title: &str, recipe: &Recipe, disks: &[PathBuf], work: &Path, progress: &
                     translated.push(target);
                 }
             }
+            Method::Exec if recipe.builtin == "dsretrack" => {
+                // Dragon Slayer's patcher, built in: the archive brings its text lists.
+                let lists = find_file(&unpacked, "dragon_slayer_orig.json").and_then(|path| path.parent().map(Path::to_path_buf)).ok_or("listes de textes absentes de l'archive")?;
+                match crate::dsretrack::translate(disk, &lists) {
+                    Ok(path) => translated.push(path),
+                    Err(error) => unknown.push(format!("{name} : {error}")),
+                }
+            }
             Method::Exec => {
                 // The patcher writes its result next to the floppy: what appears there is it.
                 let folder = disk.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -271,6 +281,21 @@ fn run(title: &str, recipe: &Recipe, disks: &[PathBuf], work: &Path, progress: &
         message.push_str(&format!(" Non reconnue(s) : {}.", unknown.join(" ; ")));
     }
     Ok((message, shown))
+}
+
+/// A file somewhere under `root`.
+fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
+    for entry in fs::read_dir(root).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_file(&path, name) {
+                return Some(found);
+            }
+        } else if path.file_name().is_some_and(|file| file == name) {
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn unzip(archive: &Path, target: &Path) -> Result<(), String> {
@@ -331,5 +356,24 @@ mod online {
         let error = super::translate("Asteka", &recipe, &[disk], &progress).unwrap_err();
         assert!(error.contains("Aucune disquette reconnue"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod real_floppies {
+    /// Real floppies (RETRO_DUMPS: a folder of copies) through the platform's recipes.
+    #[test]
+    #[ignore]
+    fn translate_real_floppies() {
+        let dir = std::path::PathBuf::from(std::env::var("RETRO_DUMPS").expect("RETRO_DUMPS"));
+        for (game, prefix) in [("horror-house-1", "Horror House"), ("demons-ring", "Demon")] {
+            let disks: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|entry| entry.path())
+                .filter(|path| path.file_name().unwrap().to_string_lossy().starts_with(prefix) && !path.to_string_lossy().contains("[FR]"))
+                .collect();
+            let recipe = super::platform(game).expect("recette");
+            let progress = crate::patch::Shared::default();
+            let (message, folder) = super::translate(game, &recipe, &disks, &progress).expect(game);
+            println!("{game} {} : {message} -> {}", recipe.version.unwrap_or_default(), folder.display());
+        }
     }
 }

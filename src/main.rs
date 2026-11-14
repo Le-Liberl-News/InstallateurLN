@@ -4,6 +4,7 @@
 mod app;
 mod catalog;
 mod detect;
+mod dsretrack;
 mod games;
 mod images;
 mod motion;
