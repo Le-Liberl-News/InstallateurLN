@@ -786,8 +786,9 @@ impl App {
 
         // The title, letter after letter, as big as it fits.
         let title = project.title.to_uppercase();
-        // Below the title: the patch line, two lines of description, the button.
-        let room = (screen.max.y - BAND - 16.0) - (top + 40.0) - 44.0 - (if project.sheet.description.is_empty() { 8.0 } else { 66.0 }) - 92.0;
+        // Below the title: the patch line, up to five lines of description, the button.
+        let reserve = if project.sheet.description.is_empty() { 8.0 } else { 22.0 + 21.0 * 5.0 };
+        let room = (screen.max.y - BAND - 16.0) - (top + 40.0) - 44.0 - reserve - 92.0;
         let mut size = 96.0;
         let mut lines = motion::wrap(&painter, &title, &motion::display(size), column);
         while (lines.len() > 3 || lines.len() as f32 * size > room || lines.iter().any(|line| motion::width(&painter, line, &motion::display(size)) > column)) && size > 36.0 {
@@ -828,8 +829,14 @@ impl App {
         spaced(&painter, pos2(left + 18.0, y + 9.0 + shift), &line, &motion::semibold(13.0), alpha(theme.ink, reveal), 1.6);
         y += 30.0;
         if !project.sheet.description.is_empty() {
-            let text = shorten(&project.sheet.description, 110);
-            let galley = painter.layout(text, motion::body(15.0), alpha(theme.muted, reveal), column.min(470.0));
+            // As much of the description as fits above the button (two lines at least).
+            let free = (screen.max.y - BAND - 16.0) - (y + shift) - 22.0 - 92.0;
+            let mut length = project.sheet.description.chars().count();
+            let mut galley = painter.layout(shorten(&project.sheet.description, length), motion::body(15.0), alpha(theme.muted, reveal), column.min(470.0));
+            while galley.size().y > free.max(44.0) && length > 110 {
+                length = length.saturating_sub(30).max(110);
+                galley = painter.layout(shorten(&project.sheet.description, length), motion::body(15.0), alpha(theme.muted, reveal), column.min(470.0));
+            }
             painter.galley(pos2(left, y + shift), galley.clone(), theme.muted);
             y += galley.size().y + 22.0;
         } else {
@@ -1026,8 +1033,10 @@ impl App {
         let tint = Color32::from_white_alpha((255.0 * opacity * arrived) as u8);
         let (shape, placed) = Self::art_shape(size, pixel, focus, *poly, area, offset, zoom);
         let blur = self.images.blur(&url);
-        if size.x >= 800.0 || pixel {
-            if let (Some(blur), false) = (blur, placed.contains_rect(Rect::from_points(&shape))) {
+        // Only a screen (art_shape: narrower than 2:1) leaves the stage partly bare; a wide
+        // picture covers it, cut by the slanted outline.
+        if (size.x >= 800.0 || pixel) && size.x / size.y < 2.0 {
+            if let Some(blur) = blur {
                 // A screen that does not cover the stage: its blurred copy behind, its edges fading.
                 let bounds = Rect::from_points(&shape);
                 let dim = Color32::from_white_alpha((255.0 * opacity * arrived * 0.8) as u8);
