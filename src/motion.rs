@@ -329,17 +329,19 @@ pub fn letters(painter: &Painter, at: Pos2, text: &str, font: FontId, colour: Co
     let height = font.size * 1.1;
     let clip = Rect::from_min_size(pos2(at.x - 4.0, at.y - height * 0.08), vec2(4000.0, height * 1.12));
     let painter = painter.with_clip_rect(painter.clip_rect().intersect(clip));
-    let mut x = at.x;
-    for (index, character) in text.chars().enumerate() {
-        let galley = painter.layout_no_wrap(character.to_string(), font.clone(), colour);
+    // Each letter where the whole line puts it (kerning included), so the line drawn whole
+    // once the letters are in place does not shift by a hair.
+    let line = painter.layout_no_wrap(text.to_string(), font.clone(), colour);
+    let glyphs = line.rows.first().map(|row| row.glyphs.clone()).unwrap_or_default();
+    for (index, glyph) in glyphs.iter().enumerate() {
         let local = if out { clamp01(t / 0.18) } else { clamp01((t - index as f32 * stagger) / 0.42) };
         let offset = if out { -ease_in_out(local) * height } else { (1.0 - ease_out_quint(local)) * height };
-        if out || local > 0.0 {
-            painter.galley(pos2(x, at.y + offset), galley.clone(), colour);
+        if (out || local > 0.0) && !glyph.chr.is_whitespace() {
+            let galley = painter.layout_no_wrap(glyph.chr.to_string(), font.clone(), colour);
+            painter.galley(pos2(at.x + glyph.pos.x, at.y + offset), galley, colour);
         }
-        x += galley.size().x;
     }
-    x - at.x
+    line.size().x
 }
 
 /// How wide a text is in a font.
