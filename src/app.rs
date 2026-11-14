@@ -120,6 +120,8 @@ pub struct App {
     pub images: Images,
     pub games: HashMap<&'static str, GameState>,
     pub voices: HashMap<&'static str, Slot<Result<Option<crate::voices::VoiceRelease>, String>>>,
+    /// The retro games' patches PatchRetro serves (asked for at start).
+    pub retro: HashMap<String, Slot<crate::retro::Recipe>>,
     pub reviews: HashMap<String, Slot<Reviews>>,
     pub mode: Mode,
     pub mode_changed: f64,
@@ -214,6 +216,22 @@ impl App {
             .collect();
         let themes = Themes::load();
         let catalog = catalog::bundled();
+        let retro = catalog
+            .projects
+            .iter()
+            .filter(|project| project.series == Series::Retro)
+            .map(|project| {
+                let slot: Slot<crate::retro::Recipe> = Arc::default();
+                let (inner, context, id) = (slot.clone(), context.clone(), project.id.clone());
+                std::thread::spawn(move || {
+                    if let Some(recipe) = crate::retro::platform(&id) {
+                        *inner.lock().unwrap() = Some(recipe);
+                        context.request_repaint();
+                    }
+                });
+                (project.id.clone(), slot)
+            })
+            .collect();
         let from_theme = themes.of(catalog.projects.first().map(|project| project.id.as_str()).unwrap_or("default"));
         App {
             catalog,
@@ -222,6 +240,7 @@ impl App {
             images: Images::new(),
             games,
             voices,
+            retro,
             reviews: HashMap::new(),
             mode: Mode::Discover,
             mode_changed: -10.0,
@@ -427,7 +446,7 @@ impl App {
     /// Translates a retro game's floppies.
     pub fn start_floppies(&mut self, context: &egui::Context, index: usize, disks: Vec<PathBuf>) {
         let project = &self.catalog.projects[index];
-        let Some(recipe) = project.sheet.install.as_ref().and_then(crate::retro::Recipe::read) else { return };
+        let Some(recipe) = self.recipe(project) else { return };
         let title = project.title.clone();
         self.spawn(context, project.id.clone(), JobKind::Floppies, move |progress| {
             let (message, folder) = crate::retro::translate(&title, &recipe, &disks, progress)?;
@@ -449,6 +468,14 @@ impl App {
         });
         self.outcomes.remove(&project);
         self.job = Some(Job { project, shared, kind });
+    }
+
+    /// How a retro game's floppies are translated: PatchRetro's recipe, else projects.json's.
+    pub fn recipe(&self, project: &Project) -> Option<crate::retro::Recipe> {
+        self.retro
+            .get(&project.id)
+            .and_then(|slot| slot.lock().unwrap().clone())
+            .or_else(|| project.sheet.install.as_ref().and_then(crate::retro::Recipe::read))
     }
 
     pub fn voice_release(&self, project: &Project) -> Option<Result<Option<crate::voices::VoiceRelease>, String>> {
@@ -832,7 +859,7 @@ impl App {
         }
         let Some(state) = self.state(project) else {
             // Floppies translated here, a patch the site distributes, or one still in the works.
-            if project.sheet.install.as_ref().and_then(crate::retro::Recipe::read).is_some_and(|recipe| recipe.local()) {
+            if self.recipe(project).is_some_and(|recipe| recipe.local()) {
                 return ("TRADUIRE MES DISQUETTES".into(), if self.job.is_none() { HomeAction::Floppies } else { HomeAction::Page });
             }
             return if project.status_label.to_lowercase().contains("termin") {

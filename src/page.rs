@@ -72,7 +72,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, screen: Rect, theme: &Theme) {
     let mut child = ui.new_child(UiBuilder::new().max_rect(area));
     let (tab, tab_changed, tab_direction) = app.page.as_ref().map(|page| (page.tab, page.tab_changed, page.tab_direction)).unwrap_or((Tab::Overview, 0.0, 1.0));
     let switch = ease_out_quint(app.progress(tab_changed, 0.35));
-    let output = egui::ScrollArea::vertical().id_salt(("page", &project.id)).auto_shrink([false, false]).show(&mut child, |ui| {
+    // The wheel scrolls the page wherever the mouse is: over the hero and the top bar
+    // (layers above the content) it is handed to the page.
+    let over_chrome = ui.ctx().pointer_hover_pos().is_some_and(|pos| pos.y < screen.min.y + hero_height(app) + TABS);
+    let wheel = if over_chrome && app.page.as_ref().is_some_and(|page| page.lightbox.is_none() && page.confirm.is_none()) {
+        ui.ctx().input(|input| input.smooth_scroll_delta.y)
+    } else {
+        0.0
+    };
+    let mut area = egui::ScrollArea::vertical().id_salt(("page", &project.id)).auto_shrink([false, false]);
+    if wheel != 0.0 {
+        let current = app.page.as_ref().map(|page| page.scroll).unwrap_or(0.0);
+        area = area.vertical_scroll_offset((current - wheel).max(0.0));
+    }
+    let output = area.show(&mut child, |ui| {
         ui.add_space(HERO + TABS + 26.0);
         let left = screen.min.x + MARGIN + tab_direction * (1.0 - switch) * 36.0;
         let width = screen.width() - MARGIN * 2.0;
@@ -302,7 +315,10 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
         ui.add_space(18.0);
         let painter = ui.painter().clone();
         let at = ui.cursor().min;
-        let recipe = project.sheet.install.as_ref().and_then(crate::retro::Recipe::read).filter(crate::retro::Recipe::local);
+        let recipe = app.recipe(project).filter(crate::retro::Recipe::local);
+        if let Some(version) = recipe.as_ref().and_then(|recipe| recipe.version.clone()) {
+            ui.label(RichText::new(format!("Patch {version}")).color(theme.muted));
+        }
         let ours = app.job.as_ref().is_some_and(|job| job.project == project.id);
         if let Some(link) = project.link.clone().filter(|_| project.series == crate::catalog::Series::Other) {
             // A creation: played in the browser.

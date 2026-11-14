@@ -45,6 +45,9 @@ pub struct Recipe {
     pub command: String,
     pub targets: Vec<Target>,
     pub extras: Vec<String>,
+    /// Served by the platform from PatchRetro: its version, and where its files are.
+    pub version: Option<String>,
+    pub assets: Option<String>,
 }
 
 impl Recipe {
@@ -73,7 +76,7 @@ impl Recipe {
             })
             .collect();
         let extras = value.get("extras").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
-        Some(Recipe { method, archive: text("archive"), command: text("command"), targets, extras })
+        Some(Recipe { method, archive: text("archive"), command: text("command"), targets, extras, version: None, assets: None })
     }
 
     /// Whether this installer can translate the floppies itself here.
@@ -84,6 +87,17 @@ impl Recipe {
             Method::Link => false,
         }
     }
+}
+
+/// A game's patch from PatchRetro (patch.php?channel=retro): None while it is not there.
+pub fn platform(game: &str) -> Option<Recipe> {
+    let url = format!("{}?channel=retro&game={game}", patch::API);
+    let text = patch::download_text(&url).ok()?;
+    let answer: Value = serde_json::from_str(&text).ok()?;
+    let mut recipe = Recipe::read(answer.get("recipe")?)?;
+    recipe.version = answer.get("version").and_then(Value::as_str).map(str::to_string);
+    recipe.assets = Some(format!("{url}&asset="));
+    Some(recipe)
 }
 
 fn domain() -> String {
@@ -151,7 +165,11 @@ pub fn translate(title: &str, recipe: &Recipe, disks: &[PathBuf], progress: &Sha
 fn run(title: &str, recipe: &Recipe, disks: &[PathBuf], work: &Path, progress: &Shared) -> Result<(String, PathBuf), String> {
     patch::report(progress, "Téléchargement", "patch", 0, 0);
     let archive = work.join("patch.zip");
-    patch::download(&archive_url(&recipe.archive), &archive, 0, "patch", progress)?;
+    let url = match &recipe.assets {
+        Some(base) => format!("{base}{}", recipe.archive),
+        None => archive_url(&recipe.archive),
+    };
+    patch::download(&url, &archive, 0, "patch", progress)?;
     let unpacked = work.join("patch");
     unzip(&archive, &unpacked)?;
 
