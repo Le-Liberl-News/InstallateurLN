@@ -2,21 +2,22 @@
 //! decoded in the background (four at a time, at most 1920 px), turned into
 //! textures on the window's thread.
 
-use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions, Vec2};
+use eframe::egui::{self, ColorImage, TextureFilter, TextureHandle, TextureId, TextureOptions, Vec2};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
 
 pub enum Entry {
     Loading,
-    Ready { texture: TextureHandle, size: Vec2, since: f64 },
+    /// `blur`: a small blurred copy, the backdrop of frames the picture does not fill.
+    Ready { texture: TextureHandle, blur: Option<TextureHandle>, size: Vec2, since: f64 },
     Failed,
 }
 
 pub struct Images {
     entries: HashMap<String, Entry>,
-    sender: Sender<(String, Option<ColorImage>, bool)>,
-    receiver: Receiver<(String, Option<ColorImage>, bool)>,
+    sender: Sender<(String, Option<(ColorImage, ColorImage)>, bool)>,
+    receiver: Receiver<(String, Option<(ColorImage, ColorImage)>, bool)>,
     slots: Arc<(Mutex<usize>, Condvar)>,
 }
 
@@ -33,10 +34,12 @@ impl Images {
     pub fn poll(&mut self, context: &egui::Context, now: f64) {
         while let Ok((url, image, pixel)) = self.receiver.try_recv() {
             let entry = match image {
-                Some(image) => {
+                Some((image, blurred)) => {
                     let size = Vec2::new(image.size[0] as f32, image.size[1] as f32);
-                    let options = if pixel { TextureOptions::NEAREST } else { TextureOptions::LINEAR };
-                    Entry::Ready { texture: context.load_texture(&url, image, options), size, since: now }
+                    // Mipmaps: a big picture shown small stays smooth instead of shimmering.
+                    let options = if pixel { TextureOptions::NEAREST } else { TextureOptions { mipmap_mode: Some(TextureFilter::Linear), ..TextureOptions::LINEAR } };
+                    let blur = Some(context.load_texture(format!("{url}#flou"), blurred, TextureOptions::LINEAR));
+                    Entry::Ready { texture: context.load_texture(&url, image, options), blur, size, since: now }
                 }
                 None => Entry::Failed,
             };
@@ -66,7 +69,15 @@ impl Images {
             });
         }
         match self.entries.get(url) {
-            Some(Entry::Ready { texture, size, since }) => Some((texture, *size, *since)),
+            Some(Entry::Ready { texture, size, since, .. }) => Some((texture, *size, *since)),
+            _ => None,
+        }
+    }
+
+    /// The blurred copy of a picture already here.
+    pub fn blur(&self, url: &str) -> Option<TextureId> {
+        match self.entries.get(url) {
+            Some(Entry::Ready { blur: Some(blur), .. }) => Some(blur.id()),
             _ => None,
         }
     }
@@ -84,13 +95,18 @@ impl Images {
     }
 }
 
-fn download(url: &str) -> Option<ColorImage> {
+fn download(url: &str) -> Option<(ColorImage, ColorImage)> {
     let response = ureq::get(url).header("User-Agent", "InstallateurLiberlNews").call().ok()?;
     let bytes = response.into_body().with_config().limit(16 << 20).read_to_vec().ok()?;
     let mut image = image::load_from_memory(&bytes).ok()?;
     if image.width() > LARGEST || image.height() > LARGEST {
         image = image.resize(LARGEST, LARGEST, image::imageops::FilterType::Triangle);
     }
+    // The backdrop: tiny, blurred, then smoothed again when the screen enlarges it.
+    let small = image.resize(48, 48, image::imageops::FilterType::Triangle).blur(2.5).to_rgba8();
     let image = image.to_rgba8();
-    Some(ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw()))
+    Some((
+        ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw()),
+        ColorImage::from_rgba_unmultiplied([small.width() as usize, small.height() as usize], small.as_raw()),
+    ))
 }

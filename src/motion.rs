@@ -175,10 +175,46 @@ pub fn image_in(painter: &Painter, texture: TextureId, placed: Rect, points: &[P
     painter.add(Shape::mesh(mesh));
 }
 
-/// The whole picture inside `area` (no part cut), zoomed by `zoom`.
-pub fn contain(size: Vec2, area: Rect, zoom: f32) -> Rect {
-    let scale = (area.width() / size.x).min(area.height() / size.y) * zoom;
-    Rect::from_center_size(area.center(), size * scale)
+/// A picture in a slanted frame without cutting it: the frame is filled with the picture's
+/// blurred copy (`blur`), and the whole picture lies on it in `upright`, its edges fading into the
+/// blur. `crop`: how much larger than whole it may be shown (1: never cut; a very wide picture in a
+/// tall frame is better a little cut than lost in blur). `zoom` breathes the backdrop (hover).
+#[allow(clippy::too_many_arguments)]
+pub fn picture_in(painter: &Painter, texture: TextureId, blur: Option<TextureId>, size: Vec2, shape: &[Pos2], upright: Rect, crop: f32, zoom: f32, tint: Color32) {
+    let bounds = Rect::from_points(shape);
+    if let Some(blur) = blur {
+        let dim = Color32::from_rgba_premultiplied((tint.r() as f32 * 0.85) as u8, (tint.g() as f32 * 0.85) as u8, (tint.b() as f32 * 0.85) as u8, tint.a());
+        image_in(painter, blur, cover(size, bounds, zoom * 1.08, Vec2::ZERO), shape, dim);
+    }
+    let whole = (upright.width() / size.x).min(upright.height() / size.y);
+    let full = (upright.width() / size.x).max(upright.height() / size.y);
+    let placed = Rect::from_center_size(upright.center(), size * full.min(whole * crop));
+    let visible = placed.intersect(upright);
+    let fade = (visible.width().min(visible.height()) * 0.07).clamp(2.0, 12.0);
+    if blur.is_some() { image_soft(painter, texture, placed, visible, fade, tint) } else { image_in(painter, texture, placed, shape, tint) }
+}
+
+/// The part `visible` of a picture laid on `placed`, its edges fading out over `fade` points.
+pub fn image_soft(painter: &Painter, texture: TextureId, placed: Rect, visible: Rect, fade: f32, tint: Color32) {
+    let xs = [visible.min.x, visible.min.x + fade, visible.max.x - fade, visible.max.x];
+    let ys = [visible.min.y, visible.min.y + fade, visible.max.y - fade, visible.max.y];
+    let clear = Color32::from_rgba_premultiplied(0, 0, 0, 0);
+    let mut mesh = egui::Mesh::with_texture(texture);
+    for (j, y) in ys.iter().enumerate() {
+        for (i, x) in xs.iter().enumerate() {
+            let inside = (1..=2).contains(&i) && (1..=2).contains(&j);
+            let uv = pos2((x - placed.min.x) / placed.width(), (y - placed.min.y) / placed.height());
+            mesh.vertices.push(egui::epaint::Vertex { pos: pos2(*x, *y), uv, color: if inside { tint } else { clear } });
+        }
+    }
+    for j in 0..3u32 {
+        for i in 0..3u32 {
+            let a = j * 4 + i;
+            mesh.add_triangle(a, a + 1, a + 5);
+            mesh.add_triangle(a, a + 5, a + 4);
+        }
+    }
+    painter.add(Shape::mesh(mesh));
 }
 
 /// The upright part of a slanted rectangle (`slanted(rect, slant)`): a thumbnail covering it is

@@ -1062,9 +1062,10 @@ impl App {
             if let Some(url) = project.thumbnail() {
                 let context = ui.ctx().clone();
                 if let Some((texture, image, _)) = self.images.get(&context, &url, card_theme.pixel) {
-                    let placed = motion::contain(image, motion::upright(rect, SLANT * 0.5), 1.0 + 0.05 * lift);
+                    let texture = texture.id();
                     let shade = (150.0 + 105.0 * active.max(lift)) as u8;
-                    motion::image_in(&clip, texture.id(), placed, &shape, Color32::from_rgb(shade, shade, shade));
+                    let blur = self.images.blur(&url);
+                    motion::picture_in(&clip, texture, blur, image, &shape, motion::upright(rect, SLANT * 0.5).shrink2(vec2(0.0, 2.0)), 1.08, 1.0 + 0.05 * lift, Color32::from_rgb(shade, shade, shade));
                 }
             }
             let distance = clamp01(offset.abs() / 4.5);
@@ -1191,7 +1192,8 @@ impl App {
             fill(&painter, &cut, theme.shade(0.15));
             if let Some(url) = &article.illustration {
                 if let Some((texture, size, _)) = self.images.get(&context, url, false) {
-                    motion::image_in(&painter, texture.id(), motion::cover(size, motion::upright(picture, lean), 1.0 + 0.05 * hover, Vec2::ZERO), &cut, Color32::WHITE);
+                    let texture = texture.id();
+                    motion::picture_in(&painter, texture, self.images.blur(url), size, &cut, motion::upright(picture, lean), if first { 1.45 } else { 1.3 }, 1.0 + 0.05 * hover, Color32::WHITE);
                 }
             }
             let (tx, ty, tw) = if first { (x, picture.max.y + 12.0, width) } else { (picture.max.x + 16.0, y + 4.0, width - 112.0) };

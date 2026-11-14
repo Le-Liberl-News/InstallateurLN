@@ -645,7 +645,8 @@ fn related(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
     if let Some(url) = &article.illustration {
         let context = ui.ctx().clone();
         if let Some((texture, size, _)) = app.images.get(&context, url, false) {
-            motion::image_in(&painter, texture.id(), motion::cover(size, motion::upright(picture, SLANT * 0.6), 1.0 + 0.05 * hover, Vec2::ZERO), &shape, Color32::WHITE);
+            let texture = texture.id();
+            motion::picture_in(&painter, texture, app.images.blur(url), size, &shape, motion::upright(picture, SLANT * 0.6), 1.3, 1.0 + 0.05 * hover, Color32::WHITE);
         }
     }
     let x = picture.max.x + 16.0 + 4.0 * hover;
