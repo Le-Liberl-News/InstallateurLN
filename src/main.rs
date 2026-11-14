@@ -12,6 +12,7 @@ mod patch;
 mod retro;
 mod reviews;
 mod theme;
+mod update;
 mod video;
 mod voices;
 

@@ -28,7 +28,7 @@ pub type Slot<T> = Arc<Mutex<Option<T>>>;
 pub const TOP: f32 = 70.0;
 /// The news get their own column when the window is at least this wide.
 const PANEL_FROM: f32 = 1240.0;
-const PANEL: f32 = 340.0;
+const PANEL: f32 = 392.0;
 const BAND: f32 = 172.0;
 const NEWS_WIDTH: f32 = 380.0;
 const CARD: Vec2 = Vec2::new(176.0, 92.0);
@@ -148,6 +148,10 @@ pub struct App {
     pub screen: Rect,
     pub logo: egui::TextureHandle,
     pub player: crate::video::Player,
+    /// A newer installer, once GitHub answered; and its download in progress.
+    pub update: Slot<crate::update::Update>,
+    pub updating: Slot<Result<(), String>>,
+    pub update_started: bool,
     /// The trailer the page asks for this frame.
     pub trailer: Option<crate::video::Request>,
 }
@@ -249,6 +253,20 @@ impl App {
                 context.load_texture("logo", egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw()), egui::TextureOptions::LINEAR)
             },
             player: crate::video::Player::default(),
+            update: {
+                crate::update::clean();
+                let slot: Slot<crate::update::Update> = Arc::default();
+                let (inner, context) = (slot.clone(), context.clone());
+                std::thread::spawn(move || {
+                    if let Some(update) = crate::update::check() {
+                        *inner.lock().unwrap() = Some(update);
+                        context.request_repaint();
+                    }
+                });
+                slot
+            },
+            updating: Arc::default(),
+            update_started: false,
             trailer: None,
         }
     }
@@ -1371,6 +1389,37 @@ impl App {
                     right -= 42.0;
                 }
                 let search = Rect::from_min_size(pos2(right - 250.0, rect.center().y - 16.0), vec2(240.0, 32.0));
+                // A newer installer: offered next to the search, installed in one click.
+                let update = self.update.lock().unwrap().clone();
+                if let Some(update) = update {
+                    let failed = self.updating.lock().unwrap().clone().and_then(Result::err);
+                    let label = if failed.is_some() {
+                        "MISE À JOUR IMPOSSIBLE".to_string()
+                    } else if self.update_started {
+                        "MISE À JOUR…".to_string()
+                    } else {
+                        format!("MISE À JOUR {}", update.version)
+                    };
+                    let width = spaced_width(&painter, &label, &motion::semibold(12.0), 1.6) + 30.0;
+                    let chip = Rect::from_min_size(pos2(search.min.x - width - 16.0, rect.center().y - 15.0), vec2(width, 30.0));
+                    let response = ui.interact(chip, Id::new("update"), Sense::click());
+                    let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
+                    fill(&painter, &slanted(chip.translate(vec2(4.0, 4.0)), SLANT), theme.accent2);
+                    fill(&painter, &slanted(chip, SLANT), mix(theme.accent, Color32::WHITE, 0.15 * hover));
+                    spaced(&painter, pos2(chip.min.x + 15.0, chip.center().y), &label, &motion::semibold(12.0), theme.bg, 1.6);
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                    }
+                    let tip = failed.unwrap_or_else(|| format!("Installer la version {} de l'installateur (il redémarre)", update.version));
+                    if response.on_hover_text(tip).clicked() && !self.update_started && self.job.is_none() {
+                        self.update_started = true;
+                        let slot = self.updating.clone();
+                        std::thread::spawn(move || *slot.lock().unwrap() = Some(crate::update::apply(&update)));
+                    }
+                    if self.update_started {
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                    }
+                }
                 fill(&painter, &slanted(search, SLANT * 0.5), alpha(theme.bg, 0.88));
                 painter.add(egui::Shape::closed_line(slanted(search, SLANT * 0.5).to_vec(), Stroke::new(1.0, alpha(theme.accent, 0.35))));
                 motion::icon(&painter, Icon::Search, pos2(search.min.x + 18.0, search.center().y), 13.0, theme.muted);

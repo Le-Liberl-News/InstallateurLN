@@ -6,7 +6,7 @@ edition = "2024"
 
 [dependencies]
 crc32fast = "1.5.5"
-eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "clipboard"] }
 hex = "0.4.3"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 rfd = "0.18.0"
@@ -22,7 +22,7 @@ winresource = "0.1.34"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux / Steam Deck: X11 and Wayland windows (both opened at run time, nothing to install).
-eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "clipboard", "x11", "wayland"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56.0"
