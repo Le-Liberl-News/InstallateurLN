@@ -1,0 +1,16 @@
+{
+  "_doc": "Un thème par projet (id du catalogue du site). bg : fond ; ink / muted : texte et texte secondaire (déduits du fond sinon) ; accent : couleur dominante ; accent2 : ombre portée et liseré des transitions ; motif : orbits | rays | grid | scanlines | dots ; transition : slash | shutter | scan ; pixel : illustrations agrandies sans lissage (jeux rétro). Un projet absent prend « default ».",
+  "default":        { "bg": "#f5f3ee", "ink": "#1d2238", "muted": "#626a80", "accent": "#2f5fb3", "accent2": "#a9c6ec", "motif": "rays",      "transition": "slash" },
+  "sky-fc":         { "bg": "#f3f7fd", "ink": "#121f45", "muted": "#56648a", "accent": "#2c5bb5", "accent2": "#a3c4ef", "motif": "orbits",    "transition": "slash" },
+  "sky-sc":         { "bg": "#fbf5f1", "ink": "#2a1518", "muted": "#7a5d5f", "accent": "#c42a3c", "accent2": "#f0b9a2", "motif": "orbits",    "transition": "slash" },
+  "sky-3rd":        { "bg": "#f1f6f6", "ink": "#0f272d", "muted": "#566e73", "accent": "#1d7e92", "accent2": "#a9d5cf", "motif": "grid",      "transition": "shutter" },
+  "zero":           { "bg": "#f2f5fb", "ink": "#131f39", "muted": "#5a6680", "accent": "#2b6cd4", "accent2": "#f1cf72", "motif": "rays",      "transition": "shutter" },
+  "sen_1":          { "bg": "#f5f4f2", "ink": "#1c1c22", "muted": "#66656d", "accent": "#b7282e", "accent2": "#bfc4cc", "motif": "grid",      "transition": "shutter" },
+  "dragon-slayer":  { "bg": "#060a06", "accent": "#5cf27c", "accent2": "#1f6b2c", "motif": "scanlines", "transition": "scan", "pixel": true },
+  "xanadu":         { "bg": "#05090f", "accent": "#5cc8ff", "accent2": "#1d4f7a", "motif": "scanlines", "transition": "scan", "pixel": true },
+  "demons-ring":    { "bg": "#0c0610", "accent": "#b77bff", "accent2": "#4d2a73", "motif": "scanlines", "transition": "scan", "pixel": true },
+  "asteka":         { "bg": "#0e0904", "accent": "#ffb52e", "accent2": "#7a4a10", "motif": "scanlines", "transition": "scan", "pixel": true },
+  "horror-house-1": { "bg": "#0d0505", "accent": "#ff4646", "accent2": "#6b1414", "motif": "scanlines", "transition": "scan", "pixel": true },
+  "horror-house-2": { "bg": "#0d0507", "accent": "#ff5c8a", "accent2": "#6b1430", "motif": "scanlines", "transition": "scan", "pixel": true },
+  "dolce-traccia":  { "bg": "#120a12", "accent": "#ff8a3d", "accent2": "#6e2a5a", "motif": "dots",      "transition": "slash" }
+}

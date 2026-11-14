@@ -1,0 +1,38 @@
+[package]
+name = "installateur-ln"
+description = "Installateur des patchs français du Liberl News"
+version = "2.0.0"
+edition = "2024"
+
+[dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
+hex = "0.4.3"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+rfd = "0.18.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha1 = "0.11.0"
+sha2 = "0.11.1"
+ureq = "3.5.2"
+zip = { version = "9.5.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[build-dependencies]
+winresource = "0.1.34"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux / Steam Deck: X11 and Wayland windows (both opened at run time, nothing to install).
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56.0"
+wry = "0.57.2"
+
+[[bin]]
+name = "InstallateurLiberlNews"
+path = "src/main.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
