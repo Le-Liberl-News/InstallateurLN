@@ -52,10 +52,15 @@ mod win {
     pub const SWP_NOSIZE: u32 = 0x0001;
     pub const SWP_NOZORDER: u32 = 0x0004;
     pub const SWP_NOACTIVATE: u32 = 0x0010;
+    pub const GWL_STYLE: i32 = -16;
+    pub const WS_CLIPCHILDREN: isize = 0x0200_0000;
     #[link(name = "user32")]
     unsafe extern "system" {
         pub fn SetWindowPos(hwnd: *mut c_void, after: *mut c_void, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
         pub fn SetWindowRgn(hwnd: *mut c_void, region: *mut c_void, redraw: i32) -> i32;
+        pub fn GetParent(hwnd: *mut c_void) -> *mut c_void;
+        pub fn GetWindowLongPtrW(hwnd: *mut c_void, index: i32) -> isize;
+        pub fn SetWindowLongPtrW(hwnd: *mut c_void, index: i32, value: isize) -> isize;
     }
     #[link(name = "gdi32")]
     unsafe extern "system" {
@@ -72,15 +77,14 @@ fn bounds(rect: Rect) -> wry::Rect {
 }
 
 impl Player {
-    /// The video is on screen: the page draws nothing under it (only black), so nothing shows
-    /// at its edges while it follows the scroll.
+    /// The trailer's view is there: the page draws only black under it.
     #[cfg(windows)]
-    pub fn showing(&self) -> bool {
-        self.current.as_ref().is_some_and(|current| current.visible)
+    pub fn exists(&self) -> bool {
+        self.current.is_some()
     }
 
     #[cfg(not(windows))]
-    pub fn showing(&self) -> bool {
+    pub fn exists(&self) -> bool {
         false
     }
 
@@ -133,17 +137,33 @@ impl Player {
                         Ok(()) => parent.0 as *mut std::ffi::c_void,
                         Err(_) => std::ptr::null_mut(),
                     };
-                    self.current = Some(Trailer { view, _context: context, id: request.id.clone(), hwnd, rect: request.rect, clip: request.rect, visible: true, paused: false });
-                    self.cut(egui_context.pixels_per_point(), request.clip);
+                    // The window must paint under the view too: kept out of it (winit's
+                    // WS_CLIPCHILDREN), that part keeps an old frame (the poster), seen at the
+                    // view's edges each time it moves.
+                    if !hwnd.is_null() {
+                        unsafe {
+                            let window = win::GetParent(hwnd);
+                            if !window.is_null() {
+                                let style = win::GetWindowLongPtrW(window, win::GWL_STYLE);
+                                win::SetWindowLongPtrW(window, win::GWL_STYLE, style & !win::WS_CLIPCHILDREN);
+                            }
+                        }
+                    }
+                    self.current = Some(Trailer { view, _context: context, id: request.id.clone(), hwnd, rect: request.rect, clip: Rect::NOTHING, visible: true, paused: false });
+                    self.cut(egui_context.pixels_per_point(), request.rect, request.clip);
                 }
                 Err(_) => self.failed = true,
             }
             return;
         }
         let ppp = egui_context.pixels_per_point();
-        let Some(current) = &mut self.current else { return };
         // Moving only moves its window (cheap); a new size resizes the browser too. Never hidden
         // while it scrolls: a hidden view is a background page, where Edge stops the picture.
+        // Cut first, then moved: for a moment it shows less, never over the hero.
+        if request.visible {
+            self.cut(ppp, request.rect, request.clip);
+        }
+        let Some(current) = &mut self.current else { return };
         if request.visible && current.rect != request.rect {
             if current.rect.size() != request.rect.size() || current.hwnd.is_null() {
                 let _ = current.view.set_bounds(bounds(request.rect));
@@ -153,10 +173,6 @@ impl Player {
             }
             current.rect = request.rect;
         }
-        if request.visible {
-            self.cut(ppp, request.clip);
-        }
-        let Some(current) = &mut self.current else { return };
         if current.visible != request.visible {
             let _ = current.view.set_visible(request.visible);
             current.visible = request.visible;
@@ -172,19 +188,21 @@ impl Player {
 
     /// Only `clip` of the view shows (a window region, in the view's own pixels).
     #[cfg(windows)]
-    fn cut(&mut self, ppp: f32, clip: Rect) {
+    fn cut(&mut self, ppp: f32, rect: Rect, clip: Rect) {
         let Some(current) = &mut self.current else { return };
-        if current.hwnd.is_null() || current.clip == clip {
+        // Kept as relative to the view: moving it keeps the same cut.
+        let relative = clip.translate(-rect.min.to_vec2());
+        if current.hwnd.is_null() || current.clip == relative {
             return;
         }
-        current.clip = clip;
-        let whole = clip.min.y <= current.rect.min.y + 0.5 && clip.max.y >= current.rect.max.y - 0.5 && clip.min.x <= current.rect.min.x + 0.5 && clip.max.x >= current.rect.max.x - 0.5;
+        current.clip = relative;
+        let whole = clip.min.y <= rect.min.y + 0.5 && clip.max.y >= rect.max.y - 0.5 && clip.min.x <= rect.min.x + 0.5 && clip.max.x >= rect.max.x - 0.5;
         unsafe {
             let region = if whole {
                 std::ptr::null_mut()
             } else {
                 let at = |value: f32, from: f32| ((value - from) * ppp).round() as i32;
-                win::CreateRectRgn(at(clip.min.x, current.rect.min.x), at(clip.min.y, current.rect.min.y), at(clip.max.x, current.rect.min.x), at(clip.max.y, current.rect.min.y))
+                win::CreateRectRgn(at(clip.min.x, rect.min.x), at(clip.min.y, rect.min.y), at(clip.max.x, rect.min.x), at(clip.max.y, rect.min.y))
             };
             win::SetWindowRgn(current.hwnd, region, 1);
         }

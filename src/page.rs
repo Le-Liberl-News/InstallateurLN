@@ -870,8 +870,9 @@ fn gallery(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media],
         Rect::from_center_size(view.center(), size * scale)
     };
     let corners = |r: Rect| [r.min, pos2(r.max.x, r.min.y), r.max, pos2(r.min.x, r.max.y)];
-    // Under the playing trailer: black only (it follows the scroll a frame late at times).
-    let live = matches!(items[current], Media::Video(_)) && app.player.showing() && p >= 1.0;
+    // Under the trailer's view: black only, never its poster (the view, a window of its own,
+    // can trail the page by a frame or two while it scrolls).
+    let live = matches!(items[current], Media::Video(_)) && app.player.exists() && p >= 1.0;
     if live {
         painter.rect_filled(view, 0.0, Color32::BLACK);
     }
@@ -911,6 +912,14 @@ fn gallery(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media],
         // It follows the page as it scrolls, cut under the hero and the tabs and by the window's
         // bottom; out of sight (or nearly), it pauses.
         let under = app.screen.min.y + hero_height(app) + TABS;
+        // The view is put where the page will be two frames on: a moved window shows at once
+        // but takes the screen a little late, the page's frames too, and not alike. The scroll
+        // eases towards its target, so this is known and never goes past it.
+        let ahead = app.page.as_ref().map(|page| {
+            let gap = page.scroll_target - page.scroll;
+            if app.reduced || gap.abs() < 0.5 { 0.0 } else { gap * (1.0 - (-app.dt.clamp(1.0 / 240.0, 1.0 / 30.0) * 14.0 * 2.0).exp()) }
+        });
+        let view = view.translate(vec2(0.0, -ahead.unwrap_or(0.0)));
         let clip = Rect::from_min_max(pos2(view.min.x, view.min.y.max(under)), pos2(view.max.x, view.max.y.min(app.screen.max.y)));
         let gone = clip.height() < view.height() * 0.25;
         app.trailer = Some(crate::video::Request { id: id.clone(), rect: view, clip, visible: settled && clip.height() >= 2.0, pause: !settled || gone });
