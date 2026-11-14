@@ -51,12 +51,12 @@ fn bounds(rect: Rect) -> wry::Rect {
 }
 
 impl Player {
-    #[cfg(windows)]
     /// What the wheel did over the video since the last frame (points, egui's direction).
     pub fn take_wheel(&self) -> f32 {
         std::mem::take(&mut *self.wheel.lock().unwrap())
     }
 
+    #[cfg(windows)]
     pub fn update(&mut self, frame: &eframe::Frame, egui_context: &eframe::egui::Context, request: Option<Request>) {
         use wry::WebViewBuilderExtWindows;
         let Some(request) = request else {
