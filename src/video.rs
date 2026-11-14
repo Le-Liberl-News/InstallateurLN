@@ -1,8 +1,8 @@
 //! The trailer, played in the page: YouTube's player in a WebView2 view (the
 //! Edge engine Windows already has; nothing is shipped) laid over the
-//! gallery's big view. It starts by itself when the page opens, pauses and
-//! hides when something covers it (a dialog, the hero while scrolling), and
-//! goes away with the page. Without WebView2, the poster opens YouTube.
+//! gallery's big view. It starts by itself when the page opens, follows the
+//! page as it scrolls (cut where the hero covers it), pauses and hides when it
+//! is out of sight or a dialog covers it, and goes away with the page. Without WebView2, the poster opens YouTube.
 
 use eframe::egui::Rect;
 
@@ -15,9 +15,10 @@ const TRAILER_PAGE: &str = "https://leliberlnews.fr/trailer.php?v=";
 pub struct Request {
     pub id: String,
     pub rect: Rect,
+    /// The part of `rect` that may be seen (the hero and the window's edge cut the rest).
+    pub clip: Rect,
     pub visible: bool,
-    /// Something covers it (a dialog, the hero): the video pauses too. Otherwise
-    /// (the page moving) it is only hidden for a moment.
+    /// Out of sight or covered by a dialog: the video pauses too.
     pub pause: bool,
 }
 
@@ -26,7 +27,10 @@ struct Trailer {
     view: wry::WebView,
     _context: wry::WebContext,
     id: String,
+    /// The view's own window (wry's child window), moved and cut without resizing the browser.
+    hwnd: *mut std::ffi::c_void,
     rect: Rect,
+    clip: Rect,
     visible: bool,
     /// Paused by us (hidden), to be resumed when seen again.
     paused: bool,
@@ -40,6 +44,24 @@ pub struct Player {
     pub failed: bool,
     /// The wheel turned over the video (the trailer page hands it over): the page scrolls with it.
     pub wheel: std::sync::Arc<std::sync::Mutex<f32>>,
+}
+
+#[cfg(windows)]
+mod win {
+    use std::ffi::c_void;
+    pub const SWP_NOSIZE: u32 = 0x0001;
+    pub const SWP_NOZORDER: u32 = 0x0004;
+    pub const SWP_NOACTIVATE: u32 = 0x0010;
+    pub const SWP_ASYNCWINDOWPOS: u32 = 0x4000;
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        pub fn SetWindowPos(hwnd: *mut c_void, after: *mut c_void, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
+        pub fn SetWindowRgn(hwnd: *mut c_void, region: *mut c_void, redraw: i32) -> i32;
+    }
+    #[link(name = "gdi32")]
+    unsafe extern "system" {
+        pub fn CreateRectRgn(left: i32, top: i32, right: i32, bottom: i32) -> *mut c_void;
+    }
 }
 
 #[cfg(windows)]
@@ -93,17 +115,37 @@ impl Player {
                 .with_additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required")
                 .build_as_child(frame);
             match built {
-                Ok(view) => self.current = Some(Trailer { view, _context: context, id: request.id.clone(), rect: request.rect, visible: true, paused: false }),
+                Ok(view) => {
+                    use wry::WebViewExtWindows;
+                    let mut parent = Default::default();
+                    let hwnd = match unsafe { view.controller().ParentWindow(&mut parent) } {
+                        Ok(()) => parent.0 as *mut std::ffi::c_void,
+                        Err(_) => std::ptr::null_mut(),
+                    };
+                    self.current = Some(Trailer { view, _context: context, id: request.id.clone(), hwnd, rect: request.rect, clip: request.rect, visible: true, paused: false });
+                    self.cut(egui_context.pixels_per_point(), request.clip);
+                }
                 Err(_) => self.failed = true,
             }
             return;
         }
+        let ppp = egui_context.pixels_per_point();
         let Some(current) = &mut self.current else { return };
-        // Moved only while it is shown (moving a web view each frame is costly).
+        // Moving only moves its window (cheap); a new size resizes the browser too. Never hidden
+        // while it scrolls: a hidden view is a background page, where Edge stops the picture.
         if request.visible && current.rect != request.rect {
-            let _ = current.view.set_bounds(bounds(request.rect));
+            if current.rect.size() != request.rect.size() || current.hwnd.is_null() {
+                let _ = current.view.set_bounds(bounds(request.rect));
+            } else {
+                let (x, y) = ((request.rect.min.x * ppp).round() as i32, (request.rect.min.y * ppp).round() as i32);
+                unsafe { win::SetWindowPos(current.hwnd, std::ptr::null_mut(), x, y, 0, 0, win::SWP_NOSIZE | win::SWP_NOZORDER | win::SWP_NOACTIVATE | win::SWP_ASYNCWINDOWPOS) };
+            }
             current.rect = request.rect;
         }
+        if request.visible {
+            self.cut(ppp, request.clip);
+        }
+        let Some(current) = &mut self.current else { return };
         if current.visible != request.visible {
             let _ = current.view.set_visible(request.visible);
             current.visible = request.visible;
@@ -114,6 +156,26 @@ impl Player {
         } else if !request.pause && current.paused && request.visible {
             let _ = current.view.evaluate_script("lnPlay()");
             current.paused = false;
+        }
+    }
+
+    /// Only `clip` of the view shows (a window region, in the view's own pixels).
+    #[cfg(windows)]
+    fn cut(&mut self, ppp: f32, clip: Rect) {
+        let Some(current) = &mut self.current else { return };
+        if current.hwnd.is_null() || current.clip == clip {
+            return;
+        }
+        current.clip = clip;
+        let whole = clip.min.y <= current.rect.min.y + 0.5 && clip.max.y >= current.rect.max.y - 0.5 && clip.min.x <= current.rect.min.x + 0.5 && clip.max.x >= current.rect.max.x - 0.5;
+        unsafe {
+            let region = if whole {
+                std::ptr::null_mut()
+            } else {
+                let at = |value: f32, from: f32| ((value - from) * ppp).round() as i32;
+                win::CreateRectRgn(at(clip.min.x, current.rect.min.x), at(clip.min.y, current.rect.min.y), at(clip.max.x, current.rect.min.x), at(clip.max.y, current.rect.min.y))
+            };
+            win::SetWindowRgn(current.hwnd, region, 1);
         }
     }
 

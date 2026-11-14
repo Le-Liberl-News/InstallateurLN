@@ -143,7 +143,7 @@ const KNOWN: &[(&str, &str, u32, &[&str])] = &[
 
 /// Per catalogue id, where the subject of its big picture is (Project::art_focus), when it is not
 /// in the middle: 0.6 shows more of the right side.
-const ART_FOCUS: &[(&str, f32)] = &[("sky-3rd", 0.68), ("zero", 0.62), ("sen_1", 0.6)];
+const ART_FOCUS: &[(&str, f32)] = &[("sky-3rd", 0.68), ("zero", 0.62), ("sen_1", 0.67)];
 
 pub struct Catalog {
     pub projects: Vec<Project>,

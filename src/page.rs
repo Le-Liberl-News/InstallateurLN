@@ -902,16 +902,12 @@ fn gallery(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media],
             && app.flight.is_none()
             && p >= 1.0;
         // The window's edge cuts the view by itself; only the hero must not cover it.
+        // It follows the page as it scrolls, cut under the hero and the tabs and by the window's
+        // bottom; out of sight (or nearly), it pauses.
         let under = app.screen.min.y + hero_height(app) + TABS;
-        let clear = view.min.y >= under && view.min.y < app.screen.max.y - 60.0;
-        // Out of sight (scrolled past, under the hero, or below the window): only then it pauses.
-        // While the page moves or the hero covers part of it, it is hidden but goes on playing.
-        let gone = view.max.y < under + view.height() * 0.25 || view.min.y > app.screen.max.y - view.height() * 0.25;
-        let moving = app.page.as_ref().is_some_and(|page| app.now - page.scrolled_at < 0.25 || (page.scroll_target - page.scroll).abs() >= 0.5);
-        if moving {
-            app.moving = true;
-        }
-        app.trailer = Some(crate::video::Request { id: id.clone(), rect: view, visible: settled && clear && !moving, pause: !settled || gone });
+        let clip = Rect::from_min_max(pos2(view.min.x, view.min.y.max(under)), pos2(view.max.x, view.max.y.min(app.screen.max.y)));
+        let gone = clip.height() < view.height() * 0.25;
+        app.trailer = Some(crate::video::Request { id: id.clone(), rect: view, clip, visible: settled && clip.height() >= 2.0, pause: !settled || gone });
         if !app.player.failed {
             painter.text(view.center(), Align2::CENTER_CENTER, "BANDE-ANNONCE", motion::display(30.0), alpha(Color32::WHITE, 0.6));
             return_strip(app, ui, project, items, theme, current, pixel, &context);
