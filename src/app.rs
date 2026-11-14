@@ -768,6 +768,21 @@ impl App {
         fill(&painter, &slanted(bar, SLANT), theme.accent);
         let clip = painter.with_clip_rect(bar);
         spaced(&clip, pos2(left + 4.0, top + 13.0), &kicker, &kicker_font, theme.bg, 2.2);
+        // The series opens the library on its shelf.
+        let series_label = project.series.label().to_uppercase();
+        let series_width = spaced_width(&painter, &series_label, &kicker_font, 2.2);
+        let series_rect = Rect::from_min_size(pos2(left - 2.0, top), vec2(series_width + 12.0, 26.0));
+        let series = ui.interact(series_rect, Id::new("kicker-series"), Sense::click());
+        if series.hovered() && unroll >= 1.0 {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            let y = top + 21.0;
+            clip.line_segment([pos2(left + 4.0, y), pos2(left + 4.0 + series_width, y)], Stroke::new(1.5, theme.bg));
+        }
+        if series.on_hover_text("Voir la série dans la bibliothèque").clicked() {
+            self.filter = Filter::Series(project.series);
+            self.query.clear();
+            self.set_mode(Mode::Library);
+        }
 
         // The title, letter after letter, as big as it fits.
         let title = project.title.to_uppercase();
@@ -1676,11 +1691,15 @@ fn setup_style(context: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let windows = PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into())).join("Fonts");
     let fallback = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    // Segoe UI to read, Segoe UI Semibold for labels, Impact for titles, Georgia italic for the news.
+    // Titles: Anton, in the executable (assets/OFL-Anton.txt), the same for everyone.
+    // Its capitals' top where Impact's was (motion::display): 74/1000 of the asked size higher.
+    let anton = FontData::from_static(include_bytes!("../assets/Anton-Regular.ttf")).tweak(egui::FontTweak { y_offset_factor: -0.074 / 0.92, ..Default::default() });
+    fonts.font_data.insert("display".into(), Arc::new(anton));
+    fonts.families.entry(FontFamily::Name("display".into())).or_default().insert(0, "display".into());
+    // Segoe UI to read, Segoe UI Semibold for labels, Georgia italic for the news.
     for (name, file, family) in [
         ("segoe", "segoeui.ttf", FontFamily::Proportional),
         ("semibold", "seguisb.ttf", FontFamily::Name("semibold".into())),
-        ("display", "impact.ttf", FontFamily::Name("display".into())),
         ("editorial", "georgiai.ttf", FontFamily::Name("editorial".into())),
     ] {
         if let Ok(bytes) = std::fs::read(windows.join(file)) {

@@ -170,7 +170,22 @@ fn hero(app: &mut App, context: &egui::Context, screen: Rect, project: &Project,
         motion::gradient_rect(&painter, Rect::from_min_max(pos2(rect.min.x, rect.min.y + height * 0.35), pos2(rect.max.x, rect.min.y + height)), alpha(theme.bg, 0.0), alpha(theme.bg, 0.92 * landed), true);
         motion::gradient_rect(&painter, Rect::from_min_max(rect.min, pos2(rect.min.x + rect.width() * 0.55, rect.min.y + height)), alpha(theme.bg, 0.75 * landed), alpha(theme.bg, 0.0), false);
         let edge_a = pos2(rect.min.x, rect.min.y + height);
-        let edge_b = pos2(rect.max.x, rect.min.y + height - 58.0);
+        // The edge rises to the right, but never into the title: it passes under the last
+        // line's end (its baseline, plus its shadow and a margin) at any width.
+        let collapse = clamp01((HERO - height) / (HERO - HERO_SMALL));
+        let size = lerp(66.0, 40.0, collapse);
+        let font = motion::display(size);
+        let title = project.title.to_uppercase();
+        let lines = motion::wrap(&painter, &title, &font, (screen.width() - MARGIN * 2.0) * 0.7);
+        let lines: Vec<String> = if lines.len() > 2 { vec![title.clone()] } else { lines };
+        let drop = lines.last().map_or(58.0, |line| {
+            let galley = painter.layout_no_wrap(line.clone(), font.clone(), theme.ink);
+            let baseline = galley.rows.first().and_then(|row| row.glyphs.first()).map_or(size, |glyph| glyph.pos.y);
+            let bottom = rect.min.y + height - 30.0 - size + baseline + 4.0 + 8.0;
+            let end = MARGIN + galley.size().x + 4.0;
+            ((edge_a.y - 4.0 - bottom).max(0.0) * rect.width() / end.max(1.0)).min(58.0)
+        });
+        let edge_b = pos2(rect.max.x, rect.min.y + height - drop);
         let reach = ease_out_quint(clamp01((t - 0.3) / 0.5));
         let tip = motion::lerp_pos(edge_a, edge_b, reach);
         fill(&painter, &[edge_a + vec2(0.0, 2.0), tip + vec2(0.0, 2.0), tip + vec2(0.0, 9.0), edge_a + vec2(0.0, 9.0)], theme.accent2);
@@ -182,12 +197,6 @@ fn hero(app: &mut App, context: &egui::Context, screen: Rect, project: &Project,
         }
 
         // The title over the picture.
-        let collapse = clamp01((HERO - height) / (HERO - HERO_SMALL));
-        let size = lerp(66.0, 40.0, collapse);
-        let font = motion::display(size);
-        let title = project.title.to_uppercase();
-        let lines = motion::wrap(&painter, &title, &font, (screen.width() - MARGIN * 2.0) * 0.7);
-        let lines: Vec<String> = if lines.len() > 2 { vec![title.clone()] } else { lines };
         let mut y = rect.min.y + height - 30.0 - lines.len() as f32 * size;
         let kicker = format!("{}  ·  {}  ·  {}", project.series.label().to_uppercase(), project.year, project.developer.to_uppercase());
         spaced(&painter, pos2(rect.min.x + MARGIN, y - 12.0), &kicker, &motion::semibold(12.0), alpha(theme.accent, landed), 2.2);
@@ -1181,7 +1190,14 @@ fn reviews(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
     }
     let open = app.page.as_ref().is_some_and(|page| page.composer);
     if !open {
-        if ui.add(egui::Button::new(RichText::new("Écrire un avis").color(theme.accent)).frame(false)).clicked() {
+        // A link: the hand and an underline when the mouse is on it.
+        let (rect, response) = ui.allocate_exact_size(motion::width(ui.painter(), "Écrire un avis", &motion::body(15.0)) * vec2(1.0, 0.0) + vec2(0.0, 22.0), Sense::click());
+        ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, "Écrire un avis", motion::body(15.0), theme.accent);
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            ui.painter().line_segment([pos2(rect.min.x, rect.max.y - 2.0), pos2(rect.max.x, rect.max.y - 2.0)], Stroke::new(1.2, theme.accent));
+        }
+        if response.clicked() {
             if let Some(page) = &mut app.page {
                 page.composer = true;
             }

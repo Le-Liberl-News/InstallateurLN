@@ -10,8 +10,10 @@ use std::f32::consts::TAU;
 /// The slant of every diagonal (x offset per unit of height).
 pub const SLANT: f32 = 0.26;
 
+/// Titles (Anton). Sized as Impact was: Anton's capitals are taller (860 against 791 per
+/// 1000), so the size shrinks by 0.92 and the glyphs rise (app.rs) to sit where Impact's did.
 pub fn display(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("display".into()))
+    FontId::new(size * 0.92, FontFamily::Name("display".into()))
 }
 pub fn semibold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("semibold".into()))
@@ -336,6 +338,8 @@ pub fn letters(painter: &Painter, at: Pos2, text: &str, font: FontId, colour: Co
     for (index, glyph) in glyphs.iter().enumerate() {
         let local = if out { clamp01(t / 0.18) } else { clamp01((t - index as f32 * stagger) / 0.42) };
         let offset = if out { -ease_in_out(local) * height } else { (1.0 - ease_out_quint(local)) * height };
+        // The last pixels of the ease are not crawled: the letter lands, whole pixels only.
+        let offset = if out { offset.round() } else if offset < 2.5 { 0.0 } else { offset.round() };
         if (out || local > 0.0) && !glyph.chr.is_whitespace() {
             let galley = painter.layout_no_wrap(glyph.chr.to_string(), font.clone(), colour);
             painter.galley(pos2(at.x + glyph.pos.x, at.y + offset), galley, colour);
