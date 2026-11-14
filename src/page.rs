@@ -870,13 +870,19 @@ fn gallery(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media],
         Rect::from_center_size(view.center(), size * scale)
     };
     let corners = |r: Rect| [r.min, pos2(r.max.x, r.min.y), r.max, pos2(r.min.x, r.max.y)];
+    // Under the playing trailer: black only (it follows the scroll a frame late at times).
+    let live = matches!(items[current], Media::Video(_)) && app.player.showing() && p >= 1.0;
+    if live {
+        painter.rect_filled(view, 0.0, Color32::BLACK);
+    }
     if p < 1.0 && previous != current {
         if let Some((texture, size, _)) = app.images.get(&context, &items[previous].picture(), pixel) {
             let placed = contain(size);
             motion::image_in(&painter, texture.id(), placed, &corners(placed), Color32::WHITE);
         }
     }
-    if let Some((texture, size, since)) = app.images.get(&context, &items[current].picture(), pixel) {
+    if live {
+    } else if let Some((texture, size, since)) = app.images.get(&context, &items[current].picture(), pixel) {
         let placed = contain(size);
         let arrived = ease_out(clamp01((app.now - since) as f32 / 0.3));
         // A slanted wipe brings the new picture.
@@ -909,7 +915,9 @@ fn gallery(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media],
         let gone = clip.height() < view.height() * 0.25;
         app.trailer = Some(crate::video::Request { id: id.clone(), rect: view, clip, visible: settled && clip.height() >= 2.0, pause: !settled || gone });
         if !app.player.failed {
-            painter.text(view.center(), Align2::CENTER_CENTER, "BANDE-ANNONCE", motion::display(30.0), alpha(Color32::WHITE, 0.6));
+            if !live {
+                painter.text(view.center(), Align2::CENTER_CENTER, "BANDE-ANNONCE", motion::display(30.0), alpha(Color32::WHITE, 0.6));
+            }
             return_strip(app, ui, project, items, theme, current, pixel, &context);
             return;
         }

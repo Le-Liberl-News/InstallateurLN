@@ -52,7 +52,6 @@ mod win {
     pub const SWP_NOSIZE: u32 = 0x0001;
     pub const SWP_NOZORDER: u32 = 0x0004;
     pub const SWP_NOACTIVATE: u32 = 0x0010;
-    pub const SWP_ASYNCWINDOWPOS: u32 = 0x4000;
     #[link(name = "user32")]
     unsafe extern "system" {
         pub fn SetWindowPos(hwnd: *mut c_void, after: *mut c_void, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
@@ -73,6 +72,18 @@ fn bounds(rect: Rect) -> wry::Rect {
 }
 
 impl Player {
+    /// The video is on screen: the page draws nothing under it (only black), so nothing shows
+    /// at its edges while it follows the scroll.
+    #[cfg(windows)]
+    pub fn showing(&self) -> bool {
+        self.current.as_ref().is_some_and(|current| current.visible)
+    }
+
+    #[cfg(not(windows))]
+    pub fn showing(&self) -> bool {
+        false
+    }
+
     /// What the wheel did over the video since the last frame (points, egui's direction).
     pub fn take_wheel(&self) -> f32 {
         std::mem::take(&mut *self.wheel.lock().unwrap())
@@ -138,7 +149,7 @@ impl Player {
                 let _ = current.view.set_bounds(bounds(request.rect));
             } else {
                 let (x, y) = ((request.rect.min.x * ppp).round() as i32, (request.rect.min.y * ppp).round() as i32);
-                unsafe { win::SetWindowPos(current.hwnd, std::ptr::null_mut(), x, y, 0, 0, win::SWP_NOSIZE | win::SWP_NOZORDER | win::SWP_NOACTIVATE | win::SWP_ASYNCWINDOWPOS) };
+                unsafe { win::SetWindowPos(current.hwnd, std::ptr::null_mut(), x, y, 0, 0, win::SWP_NOSIZE | win::SWP_NOZORDER | win::SWP_NOACTIVATE) };
             }
             current.rect = request.rect;
         }
