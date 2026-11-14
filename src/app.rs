@@ -78,6 +78,9 @@ pub struct Page {
     pub tab_direction: f32,
     pub opened: f64,
     pub scroll: f32,
+    pub scroll_target: f32,
+    pub scroll_max: f32,
+    pub scrolled_at: f64,
     pub gallery: usize,
     pub gallery_previous: usize,
     pub gallery_changed: f64,
@@ -87,6 +90,10 @@ pub struct Page {
     pub composer: bool,
     pub draft: String,
     pub rating: u8,
+    pub author: String,
+    /// The review being sent, and why it was refused.
+    pub sending: Option<Slot<Result<(), String>>>,
+    pub send_error: Option<String>,
 }
 
 /// What a job does (its progress and its success say it).
@@ -400,6 +407,9 @@ impl App {
             tab_direction: 1.0,
             opened: self.now,
             scroll: 0.0,
+            scroll_target: 0.0,
+            scroll_max: 0.0,
+            scrolled_at: -10.0,
             gallery: 0,
             gallery_previous: 0,
             gallery_changed: -10.0,
@@ -409,6 +419,9 @@ impl App {
             composer: false,
             draft: String::new(),
             rating: 0,
+            author: String::new(),
+            sending: None,
+            send_error: None,
         });
         self.flight = Some(Flight { from: from.0, from_placed: from.1, started: self.now, closing: false, project: index });
     }
@@ -610,7 +623,7 @@ impl eframe::App for App {
         });
         // The trailer view follows what the page asked for (gone when it asked nothing).
         let request = self.trailer.take();
-        self.player.update(frame, request);
+        self.player.update(frame, &context, request);
         if self.moving || self.job.is_some() {
             context.request_repaint();
         }
@@ -1175,6 +1188,12 @@ impl App {
         let painter = ui.painter().clone();
         // A dark veil: the grid is for finding, not for the decor.
         painter.rect_filled(screen, 0.0, alpha(if theme.light { Color32::WHITE } else { Color32::BLACK }, 0.35));
+        // A blue light rising from the bottom and the left: the shelf is lit, not flat.
+        let blue = if theme.light { Color32::from_rgb(0x2c, 0x5b, 0xb5) } else { Color32::from_rgb(0x4b, 0x7f, 0xd6) };
+        let (low, side) = if theme.light { (0.13, 0.07) } else { (0.16, 0.08) };
+        motion::gradient_rect(&painter, Rect::from_min_max(pos2(screen.min.x, screen.min.y + screen.height() * 0.35), screen.max), alpha(blue, 0.0), alpha(blue, low), true);
+        motion::gradient_rect(&painter, Rect::from_min_max(screen.min, pos2(screen.min.x + screen.width() * 0.45, screen.max.y)), alpha(blue, side), alpha(blue, 0.0), false);
+        motion::gradient_rect(&painter, Rect::from_min_max(pos2(screen.max.x - screen.width() * 0.3, screen.min.y), screen.max), alpha(theme.accent2, 0.0), alpha(theme.accent2, 0.10), false);
         let left = screen.min.x + 40.0;
         let mut x = left;
         let y = screen.min.y + TOP + 22.0;
@@ -1351,7 +1370,11 @@ impl App {
                 let response = ui.interact(mark, Id::new("mark"), Sense::click());
                 let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.15);
                 let shown = Rect::from_center_size(mark.center(), mark.size() * (1.0 + 0.04 * hover));
-                painter.image(self.logo.id(), shown, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                for (offset, strength) in [(vec2(0.0, 5.0), 0.10), (vec2(0.0, 3.0), 0.16), (vec2(0.0, 1.5), 0.20)] {
+                    painter.image(self.logo.id(), shown.translate(offset).expand(1.0), uv, Color32::from_black_alpha((255.0 * strength) as u8));
+                }
+                painter.image(self.logo.id(), shown, uv, Color32::WHITE);
                 if response.hovered() {
                     ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                 }

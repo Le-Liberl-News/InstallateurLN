@@ -7,7 +7,7 @@
 
 #![allow(deprecated)]
 
-use crate::app::{self, App, OPEN_TIME, TOP, Tab, open_url, shorten, slant_button, spaced, spaced_width};
+use crate::app::{self, App, OPEN_TIME, Tab, open_url, shorten, slant_button, spaced, spaced_width};
 use crate::catalog::{self, Project};
 use crate::detect::{self, Store};
 use crate::games::Credit;
@@ -20,7 +20,7 @@ use eframe::egui::{self, Align2, Color32, CursorIcon, Id, Order, Pos2, Rect, Ric
 const HERO: f32 = 380.0;
 const HERO_SMALL: f32 = 200.0;
 const TABS: f32 = 54.0;
-const SIDE: f32 = 340.0;
+const SIDE: f32 = 420.0;
 const MARGIN: f32 = 56.0;
 const RED: Color32 = Color32::from_rgb(0xff, 0x6b, 0x5e);
 
@@ -72,19 +72,47 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, screen: Rect, theme: &Theme) {
     let mut child = ui.new_child(UiBuilder::new().max_rect(area));
     let (tab, tab_changed, tab_direction) = app.page.as_ref().map(|page| (page.tab, page.tab_changed, page.tab_direction)).unwrap_or((Tab::Overview, 0.0, 1.0));
     let switch = ease_out_quint(app.progress(tab_changed, 0.35));
-    // The wheel scrolls the page wherever the mouse is: over the hero and the top bar
-    // (layers above the content) it is handed to the page.
-    let over_chrome = ui.ctx().pointer_hover_pos().is_some_and(|pos| pos.y < screen.min.y + hero_height(app) + TABS);
-    let wheel = if over_chrome && app.page.as_ref().is_some_and(|page| page.lightbox.is_none() && page.confirm.is_none()) {
-        ui.ctx().input(|input| input.smooth_scroll_delta.y)
-    } else {
+    // The page scrolls itself: the wheel counts wherever the mouse is (hero, top bar,
+    // content), a little faster than egui's, eased towards where it is going.
+    let blocked = app.page.as_ref().is_none_or(|page| page.lightbox.is_some() || page.confirm.is_some());
+    let wheel: f32 = app.player.take_wheel() + if blocked {
         0.0
+    } else {
+        ui.ctx().input(|input| {
+            input
+                .raw
+                .events
+                .iter()
+                .map(|event| match event {
+                    egui::Event::MouseWheel { unit, delta, .. } => match unit {
+                        egui::MouseWheelUnit::Point => delta.y,
+                        egui::MouseWheelUnit::Line => delta.y * 60.0,
+                        egui::MouseWheelUnit::Page => delta.y * screen.height(),
+                    },
+                    _ => 0.0,
+                })
+                .sum()
+        })
     };
-    let mut area = egui::ScrollArea::vertical().id_salt(("page", &project.id)).auto_shrink([false, false]);
-    if wheel != 0.0 {
-        let current = app.page.as_ref().map(|page| page.scroll).unwrap_or(0.0);
-        area = area.vertical_scroll_offset((current - wheel).max(0.0));
+    let (now, dt, reduced) = (app.now, app.dt, app.reduced);
+    let mut scroll = 0.0;
+    if let Some(page) = &mut app.page {
+        if wheel != 0.0 {
+            page.scroll_target = (page.scroll_target - wheel * 1.6).clamp(0.0, page.scroll_max);
+            page.scrolled_at = now;
+        }
+        let gap = page.scroll_target - page.scroll;
+        page.scroll = if reduced || gap.abs() < 0.5 { page.scroll_target } else { page.scroll + gap * (1.0 - (-dt * 14.0).exp()) };
+        scroll = page.scroll;
     }
+    if (app.page.as_ref().map(|page| page.scroll_target - page.scroll).unwrap_or(0.0)).abs() >= 0.5 {
+        app.moving = true;
+    }
+    let area = egui::ScrollArea::vertical()
+        .id_salt(("page", &project.id))
+        .auto_shrink([false, false])
+        .scroll_source(egui::containers::scroll_area::ScrollSource { scroll_bar: true, drag: egui::containers::scroll_area::DragScroll::Never, mouse_wheel: false })
+        .vertical_scroll_offset(scroll);
     let output = area.show(&mut child, |ui| {
         ui.add_space(HERO + TABS + 26.0);
         let left = screen.min.x + MARGIN + tab_direction * (1.0 - switch) * 36.0;
@@ -97,7 +125,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, screen: Rect, theme: &Theme) {
         ui.add_space(60.0);
     });
     if let Some(page) = &mut app.page {
-        page.scroll = output.state.offset().y;
+        page.scroll_max = (output.content_size.y - output.inner_rect.height()).max(0.0);
+        let offset = output.state.offset().y;
+        // The scroll bar dragged: the page follows it.
+        if (offset - page.scroll).abs() > 1.0 {
+            page.scroll = offset;
+            page.scroll_target = offset;
+        }
     }
     hero(app, ui.ctx(), screen, &project, theme, t);
     confirm_dialog(app, ui.ctx(), screen, &project, theme);
@@ -142,21 +176,6 @@ fn hero(app: &mut App, context: &egui::Context, screen: Rect, project: &Project,
             if app.progress(started, OPEN_TIME) >= 1.0 {
                 app.flight = None;
             }
-        }
-
-        // The back way, under the top bar.
-        let back = Rect::from_min_size(rect.min + vec2(MARGIN - 6.0, TOP + 10.0), vec2(118.0, 30.0));
-        let response = ui.interact(back, Id::new("back"), Sense::click());
-        let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
-        fill(&painter, &slanted(back, SLANT), alpha(theme.bg, 0.85 + 0.15 * hover));
-        motion::icon(&painter, Icon::Left, pos2(back.min.x + 18.0 - 3.0 * hover, back.center().y), 12.0, mix(theme.ink, theme.accent, hover));
-        spaced(&painter, pos2(back.min.x + 34.0, back.center().y), "RETOUR", &motion::semibold(12.0), theme.ink, 2.0);
-        if response.hovered() {
-            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-        }
-        if response.on_hover_text("Retour (Échap)").clicked() {
-            let mode = app.mode;
-            app.close(mode);
         }
 
         // The title over the picture.
@@ -237,7 +256,7 @@ fn heading(ui: &mut egui::Ui, text: &str, theme: &Theme) {
 
 fn overview(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme, left: f32, width: f32, t: f32) {
     let side = SIDE.min(width * 0.4);
-    let main = (width - side - 48.0).min(780.0);
+    let main = (width - side - 56.0).min(860.0);
     let top = ui.cursor().min.y;
     let side_x = left + width - side;
 
@@ -300,8 +319,15 @@ fn overview(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme, 
         reviews(app, ui, project, theme);
     }) + 20.0;
 
-    let side_height = place(ui, side_x, top, side, reveal(t, 0), |ui| action_panel(app, ui, project, theme));
-    let bottom = y.max(top + side_height);
+    // The patch's column follows the page while the hero shrinks, then stays under the tabs
+    // (it holds what matters most), as long as the page is longer than it.
+    let scroll = app.page.as_ref().map(|page| page.scroll).unwrap_or(0.0);
+    // Its top (the buttons) always stays under the tabs; the page grows only by what the
+    // window can show of it, so the scrolling still ends with the page.
+    let sticky = (scroll - (HERO - HERO_SMALL)).max(0.0);
+    let visible_part = (app.screen.height() - (HERO_SMALL + TABS + 26.0 + 60.0)).max(0.0);
+    let side_height = place(ui, side_x, top + sticky, side, reveal(t, 0), |ui| action_panel(app, ui, project, theme));
+    let bottom = y.max(top + sticky + side_height.min(visible_part));
     ui.allocate_exact_size(vec2(1.0, bottom - top), Sense::hover());
 }
 
@@ -412,7 +438,7 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
         }
     }
     ui.add_space(26.0);
-    ui.label(RichText::new("DERNIÈRE VERSION").font(motion::semibold(11.0)).color(theme.muted));
+    ui.label(RichText::new("DERNIÈRE VERSION").font(motion::semibold(13.0)).color(theme.muted));
     let latest = match &release {
         Some(Ok(Some(release))) => release.version.clone(),
         Some(Ok(None)) => "—".into(),
@@ -421,7 +447,7 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
     };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 62.0), Sense::hover());
     // As big as it fits: a short public number is huge, a long build name shrinks.
-    let mut size = 58.0;
+    let mut size = 68.0;
     while size > 22.0 && motion::width(ui.painter(), &latest, &motion::display(size)) > rect.width() - 8.0 {
         size -= 2.0;
     }
@@ -431,7 +457,8 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
         Installed::OldPatch => "ancien patch (mis de côté à l'installation)".to_string(),
         Installed::Version(version) => app.installed_label(project).unwrap_or_else(|| version.clone()),
     };
-    egui::Grid::new(("facts", &project.id)).num_columns(2).spacing([14.0, 5.0]).show(ui, |ui| {
+    ui.style_mut().text_styles.insert(egui::TextStyle::Body, motion::body(17.0));
+    egui::Grid::new(("facts", &project.id)).num_columns(2).spacing([18.0, 7.0]).show(ui, |ui| {
         ui.label(RichText::new("Installée").color(theme.muted));
         ui.label(installed_text);
         ui.end_row();
@@ -465,7 +492,18 @@ fn voices_row(app: &mut App, ui: &mut egui::Ui, project: &Project, folder: Optio
     use crate::voices::VoiceState;
     ui.add_space(22.0);
     heading(ui, "VOIX JAPONAISES", theme);
-    let state = folder.as_deref().map(crate::voices::state).unwrap_or(VoiceState::Missing);
+    // The disk is asked at most every two seconds (and at once after a job), not every frame.
+    let key = Id::new(("voice-state", &project.id));
+    let (now, busy_now) = (app.now, app.job.is_some());
+    let cached: Option<(VoiceState, f64, bool)> = ui.ctx().memory(|memory| memory.data.get_temp(key));
+    let state = match cached {
+        Some((state, at, was_busy)) if now - at < 2.0 && was_busy == busy_now => state,
+        _ => {
+            let state = folder.as_deref().map(crate::voices::state).unwrap_or(VoiceState::Missing);
+            ui.ctx().memory_mut(|memory| memory.data.insert_temp(key, (state.clone(), now, busy_now)));
+            state
+        }
+    };
     let busy = app.job.is_some();
     let index = app.page.as_ref().map(|page| page.project).unwrap_or(0);
     match app.voice_release(project) {
@@ -592,11 +630,11 @@ fn related(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
 }
 
 fn icon_button(ui: &mut egui::Ui, icon: Icon, tip: &str, enabled: bool, theme: &Theme) -> bool {
-    let (rect, response) = ui.allocate_exact_size(vec2(44.0, 40.0), if enabled { Sense::click() } else { Sense::hover() });
+    let (rect, response) = ui.allocate_exact_size(vec2(54.0, 48.0), if enabled { Sense::click() } else { Sense::hover() });
     let hover = ui.ctx().animate_bool_with_time(response.id, enabled && response.hovered(), 0.12);
     let painter = ui.painter();
     fill(painter, &slanted(rect.shrink(2.0), SLANT), alpha(if enabled { theme.accent } else { theme.muted }, 0.1 + 0.25 * hover));
-    motion::icon(painter, icon, rect.center(), 16.0, alpha(mix(theme.ink, Color32::WHITE, hover), if enabled { 1.0 } else { 0.3 }));
+    motion::icon(painter, icon, rect.center(), 20.0, alpha(mix(theme.ink, Color32::WHITE, hover), if enabled { 1.0 } else { 0.3 }));
     if enabled && response.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
@@ -650,7 +688,7 @@ fn install_control(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &
     };
 
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(vec2(width, 74.0), if enabled && ours.is_none() { Sense::click() } else { Sense::hover() });
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 84.0), if enabled && ours.is_none() { Sense::click() } else { Sense::hover() });
     let morph_target = if ours.is_some() || celebrating { 1.0 } else { 0.0 };
     let m = if app.reduced { morph_target } else { ui.ctx().animate_value_with_time(id.with("morph"), morph_target, 0.38) };
     let hover = ui.ctx().animate_bool_with_time(id.with("hover"), enabled && response.hovered() && ours.is_none(), 0.14);
@@ -667,14 +705,14 @@ fn install_control(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &
 
     if m < 1.0 {
         // The plate, flattening into the track.
-        let height = lerp(56.0, 12.0, ease_in_out(m));
+        let height = lerp(66.0, 12.0, ease_in_out(m));
         let plate = Rect::from_min_max(pos2(base.min.x, base.max.y - height), base.max).translate(vec2(3.0, 3.0) * press);
         let slant = SLANT * (1.0 - m);
         let shape = slanted(plate.translate(vec2(3.0 * hover, 0.0)), slant);
         fill(&painter, &shape.map(|p| p + vec2(7.0, 7.0) * (1.0 - m) - vec2(3.0, 3.0) * press), if enabled { theme.accent2 } else { alpha(theme.muted, 0.2) });
         fill(&painter, &shape, if enabled { mix(theme.accent, Color32::WHITE, 0.12 * hover) } else { alpha(theme.muted, 0.3) });
         let label_alpha = clamp01(1.0 - m * 2.5);
-        let font = motion::display(22.0);
+        let font = motion::display(26.0);
         if label == "JOUER" {
             motion::icon(&painter, Icon::Play, pos2(plate.min.x + 30.0 + 3.0 * hover, plate.center().y), 16.0, alpha(theme.bg, label_alpha));
             spaced(&painter, pos2(plate.min.x + 50.0 + 3.0 * hover, plate.center().y), label, &font, alpha(theme.bg, label_alpha), 1.6);
@@ -847,7 +885,11 @@ fn gallery(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media],
             && p >= 1.0;
         // The window's edge cuts the view by itself; only the hero must not cover it.
         let clear = view.min.y >= app.screen.min.y + hero_height(app) + TABS && view.min.y < app.screen.max.y - 60.0;
-        app.trailer = Some(crate::video::Request { id: id.clone(), rect: view, visible: settled && clear });
+        let moving = app.page.as_ref().is_some_and(|page| app.now - page.scrolled_at < 0.25 || (page.scroll_target - page.scroll).abs() >= 0.5);
+        if moving {
+            app.moving = true;
+        }
+        app.trailer = Some(crate::video::Request { id: id.clone(), rect: view, visible: settled && clear && !moving, pause: !(settled && clear) });
         if !app.player.failed {
             painter.text(view.center(), Align2::CENTER_CENTER, "BANDE-ANNONCE", motion::display(30.0), alpha(Color32::WHITE, 0.6));
             return_strip(app, ui, project, items, theme, current, pixel, &context);
@@ -1061,8 +1103,7 @@ fn reviews(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
             ui.label(RichText::new("Chargement des avis…").color(theme.muted));
         }
         Some(1) => {
-            ui.label(RichText::new("Les avis ne sont pas encore ouverts.").size(16.0));
-            ui.label(RichText::new("Vous pourrez bientôt lire les retours des joueurs et laisser le vôtre ; chaque avis sera publié après modération.").color(theme.muted));
+            ui.label(RichText::new("Les avis ne peuvent pas être chargés pour l'instant (service injoignable).").color(theme.muted));
         }
         Some(_) => {
             let list = match app.reviews.get(&project.id).and_then(|slot| slot.lock().unwrap().as_ref().map(|reviews| match reviews {
@@ -1091,7 +1132,26 @@ fn reviews(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
         }
     }
     ui.add_space(10.0);
-    // The composer is ready; sending waits for the review service.
+    // A review sent: it waits for the moderators.
+    let finished = app.page.as_ref().and_then(|page| page.sending.as_ref()).and_then(|slot| slot.lock().unwrap().take());
+    if let (Some(result), Some(page)) = (finished, app.page.as_mut()) {
+        page.sending = None;
+        match result {
+            Ok(()) => {
+                crate::reviews::remember(&project.id);
+                page.composer = false;
+                page.draft.clear();
+            }
+            Err(error) => page.send_error = Some(error),
+        }
+    }
+    if crate::reviews::sent().contains(&project.id) && !app.page.as_ref().is_some_and(|page| page.composer) {
+        egui::Frame::new().fill(alpha(theme.accent, 0.08)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("Merci ! Votre avis attend la modération : il apparaîtra ici une fois validé par l'équipe.").color(theme.ink));
+        });
+        return;
+    }
     let open = app.page.as_ref().is_some_and(|page| page.composer);
     if !open {
         if ui.add(egui::Button::new(RichText::new("Écrire un avis").color(theme.accent)).frame(false)).clicked() {
@@ -1115,14 +1175,34 @@ fn reviews(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
                 }
             }
         });
+        ui.add(egui::TextEdit::singleline(&mut page.author).hint_text("Votre pseudo").desired_width(240.0));
         ui.add(egui::TextEdit::multiline(&mut page.draft).hint_text("Ce que vous avez pensé de la traduction…").desired_rows(3).desired_width(f32::INFINITY));
+        let sending = page.sending.is_some();
+        let ready = page.rating > 0 && page.author.trim().chars().count() >= 2 && page.draft.trim().chars().count() >= 10;
         ui.horizontal(|ui| {
-            ui.add_enabled(false, egui::Button::new("Envoyer pour modération"));
+            let label = if sending { "Envoi…" } else { "Envoyer pour modération" };
+            if ui.add_enabled(ready && !sending, egui::Button::new(label)).clicked() {
+                let slot: crate::app::Slot<Result<(), String>> = Default::default();
+                let (inner, id, author, rating, text) = (slot.clone(), project.id.clone(), page.author.trim().to_string(), page.rating, page.draft.trim().to_string());
+                let context = ui.ctx().clone();
+                std::thread::spawn(move || {
+                    *inner.lock().unwrap() = Some(crate::reviews::submit(&id, &author, rating, &text));
+                    context.request_repaint();
+                });
+                page.sending = Some(slot);
+                page.send_error = None;
+            }
             if ui.add(egui::Button::new(RichText::new("Annuler").color(theme.muted)).frame(false)).clicked() {
                 page.composer = false;
             }
         });
-        ui.label(RichText::new("L'envoi n'est pas encore branché : le service d'avis et sa modération restent à créer sur le site.").size(12.0).color(theme.muted));
+        if let Some(error) = &page.send_error {
+            ui.label(RichText::new(error).size(13.0).color(RED));
+        } else if !ready {
+            ui.label(RichText::new("Une note, un pseudo (2 caractères au moins) et quelques mots (10 caractères au moins).").size(12.0).color(theme.muted));
+        } else {
+            ui.label(RichText::new("Votre avis sera publié après relecture par l'équipe.").size(12.0).color(theme.muted));
+        }
     });
 }
 

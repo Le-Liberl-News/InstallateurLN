@@ -16,6 +16,9 @@ pub struct Request {
     pub id: String,
     pub rect: Rect,
     pub visible: bool,
+    /// Something covers it (a dialog, the hero): the video pauses too. Otherwise
+    /// (the page moving) it is only hidden for a moment.
+    pub pause: bool,
 }
 
 #[cfg(windows)]
@@ -35,6 +38,8 @@ pub struct Player {
     current: Option<Trailer>,
     /// WebView2 is missing or failed: the page falls back to the poster.
     pub failed: bool,
+    /// The wheel turned over the video (the trailer page hands it over): the page scrolls with it.
+    pub wheel: std::sync::Arc<std::sync::Mutex<f32>>,
 }
 
 #[cfg(windows)]
@@ -47,7 +52,12 @@ fn bounds(rect: Rect) -> wry::Rect {
 
 impl Player {
     #[cfg(windows)]
-    pub fn update(&mut self, frame: &eframe::Frame, request: Option<Request>) {
+    /// What the wheel did over the video since the last frame (points, egui's direction).
+    pub fn take_wheel(&self) -> f32 {
+        std::mem::take(&mut *self.wheel.lock().unwrap())
+    }
+
+    pub fn update(&mut self, frame: &eframe::Frame, egui_context: &eframe::egui::Context, request: Option<Request>) {
         use wry::WebViewBuilderExtWindows;
         let Some(request) = request else {
             self.current = None;
@@ -70,6 +80,15 @@ impl Player {
                 .with_bounds(bounds(request.rect))
                 .with_background_color((0, 0, 0, 255))
                 .with_autoplay(true)
+                .with_ipc_handler({
+                    let (wheel, repaint) = (self.wheel.clone(), egui_context.clone());
+                    move |message: wry::http::Request<String>| {
+                        if let Ok(delta) = message.body().trim().parse::<f32>() {
+                            *wheel.lock().unwrap() -= delta;
+                            repaint.request_repaint();
+                        }
+                    }
+                })
                 // The defaults wry passes, plus sound without a click.
                 .with_additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required")
                 .build_as_child(frame);
@@ -80,25 +99,26 @@ impl Player {
             return;
         }
         let Some(current) = &mut self.current else { return };
-        if current.rect != request.rect {
+        // Moved only while it is shown (moving a web view each frame is costly).
+        if request.visible && current.rect != request.rect {
             let _ = current.view.set_bounds(bounds(request.rect));
             current.rect = request.rect;
         }
         if current.visible != request.visible {
             let _ = current.view.set_visible(request.visible);
-            if !request.visible {
-                let _ = current.view.evaluate_script("lnPause()");
-                current.paused = true;
-            } else if current.paused {
-                let _ = current.view.evaluate_script("lnPlay()");
-                current.paused = false;
-            }
             current.visible = request.visible;
+        }
+        if request.pause && !current.paused {
+            let _ = current.view.evaluate_script("lnPause()");
+            current.paused = true;
+        } else if !request.pause && current.paused && request.visible {
+            let _ = current.view.evaluate_script("lnPlay()");
+            current.paused = false;
         }
     }
 
     #[cfg(not(windows))]
-    pub fn update(&mut self, _frame: &eframe::Frame, _request: Option<Request>) {
+    pub fn update(&mut self, _frame: &eframe::Frame, _context: &eframe::egui::Context, _request: Option<Request>) {
         self.failed = true;
     }
 }
