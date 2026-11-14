@@ -5,6 +5,7 @@ version = "2.0.0"
 edition = "2024"
 
 [dependencies]
+crc32fast = "1.5.5"
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
 hex = "0.4.3"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }

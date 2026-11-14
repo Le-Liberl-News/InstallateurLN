@@ -1738,6 +1738,7 @@ dependencies = [
 name = "installateur-ln"
 version = "2.0.0"
 dependencies = [
+ "crc32fast",
  "eframe",
  "hex",
  "image",

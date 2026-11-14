@@ -80,24 +80,42 @@ pub fn install(game: &Game, folder: &Path, voices: &VoiceRelease, progress: &Sha
     let work = patch::data_dir().join("voix").join(game.project);
     fs::create_dir_all(&work).map_err(|error| error.to_string())?;
     let count = voices.files.len() as u64;
-    for (index, file) in voices.files.iter().enumerate() {
-        {
-            let mut state = progress.lock().unwrap();
-            state.file = index as u64;
-            state.files = count;
-        }
-        let step = format!("{} ({}/{})", file.name, index + 1, count);
+    // Fetches one zip (unless it is already there, intact).
+    let fetch = |file: &VoiceFile, step: &str, progress: &Shared| -> Result<std::path::PathBuf, String> {
         let archive = work.join(&file.name);
         if file.sha256.is_empty() || patch::sha256(&archive) != file.sha256 {
-            patch::download(&format!("{}&asset={}", url(game.project), file.name), &archive, file.size, &step, progress)?;
+            patch::download(&format!("{}&asset={}", url(game.project), file.name), &archive, file.size, step, progress)?;
             if !file.sha256.is_empty() && patch::sha256(&archive) != file.sha256 {
                 let _ = fs::remove_file(&archive);
                 return Err(format!("{} : fichier incomplet ou altéré, réessayez", file.name));
             }
         }
-        extract(&archive, folder, &step, progress)?;
-        let _ = fs::remove_file(&archive);
-    }
+        Ok(archive)
+    };
+    // The next zip downloads while the current one is unpacked.
+    std::thread::scope(|scope| -> Result<(), String> {
+        let mut pending: Option<std::thread::ScopedJoinHandle<Result<std::path::PathBuf, String>>> = None;
+        for (index, file) in voices.files.iter().enumerate() {
+            {
+                let mut state = progress.lock().unwrap();
+                state.file = index as u64;
+                state.files = count;
+            }
+            let step = format!("{} ({}/{})", file.name, index + 1, count);
+            let archive = match pending.take() {
+                Some(handle) => handle.join().map_err(|_| "téléchargement interrompu".to_string())??,
+                None => fetch(file, &step, progress)?,
+            };
+            if let Some(next) = voices.files.get(index + 1) {
+                let silent: Shared = Default::default();
+                let fetch = &fetch;
+                pending = Some(scope.spawn(move || fetch(next, &next.name, &silent)));
+            }
+            extract(&archive, folder, &step, progress)?;
+            let _ = fs::remove_file(&archive);
+        }
+        Ok(())
+    })?;
     fs::write(folder.join("voice").join(VERSION_FILE), format!("{}\n", voices.version)).map_err(|error| error.to_string())?;
     #[cfg_attr(windows, allow(unused_mut))]
     let mut message = format!("Voix {} installées.", voices.version);
@@ -113,27 +131,93 @@ pub fn install(game: &Game, folder: &Path, voices: &VoiceRelease, progress: &Sha
 }
 
 /// Unpacks a voice zip into the game folder (paths kept inside it).
+/// Thousands of small files: written by several threads at once (on Windows each
+/// new file costs a scan), each with its own reader of the zip; a file already
+/// there with the same size and CRC is left as it is (a reinstall is near instant).
 fn extract(archive: &Path, folder: &Path, step: &str, progress: &Shared) -> Result<(), String> {
-    let mut zip = zip::ZipArchive::new(File::open(archive).map_err(|error| error.to_string())?).map_err(|error| format!("{step} : {error}"))?;
-    let total = zip.len() as u64;
-    for index in 0..zip.len() {
-        let mut entry = zip.by_index(index).map_err(|error| error.to_string())?;
-        let Some(relative) = entry.enclosed_name() else { continue };
-        let target = folder.join(relative);
-        if entry.is_dir() {
-            fs::create_dir_all(&target).map_err(|error| error.to_string())?;
-        } else {
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let open = || -> Result<zip::ZipArchive<io::BufReader<File>>, String> {
+        let file = File::open(archive).map_err(|error| error.to_string())?;
+        zip::ZipArchive::new(io::BufReader::with_capacity(1 << 16, file)).map_err(|error| format!("{step} : {error}"))
+    };
+    let mut zip = open()?;
+    let total = zip.len();
+    // The folders first, once.
+    let mut folders = std::collections::BTreeSet::new();
+    for index in 0..total {
+        let entry = zip.by_index_raw(index).map_err(|error| error.to_string())?;
+        if let Some(relative) = entry.enclosed_name() {
+            let target = folder.join(relative);
+            if entry.is_dir() {
+                folders.insert(target);
+            } else if let Some(parent) = target.parent() {
+                folders.insert(parent.to_path_buf());
             }
-            let mut output = File::create(&target).map_err(|error| format!("{} : {error}", target.display()))?;
-            io::copy(&mut entry, &mut output).map_err(|error| error.to_string())?;
-        }
-        if index % 64 == 0 || index as u64 + 1 == total {
-            patch::report(progress, "Extraction", step, index as u64 + 1, total);
         }
     }
-    Ok(())
+    for path in &folders {
+        fs::create_dir_all(path).map_err(|error| format!("{} : {error}", path.display()))?;
+    }
+    drop(zip);
+
+    let threads = std::thread::available_parallelism().map(|count| count.get()).unwrap_or(4).clamp(2, 8);
+    let done = AtomicU64::new(0);
+    let failure: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    std::thread::scope(|scope| {
+        for worker in 0..threads {
+            let (done, failure) = (&done, &failure);
+            scope.spawn(move || {
+                let result = (|| -> Result<(), String> {
+                    let mut zip = open()?;
+                    let mut buffer = vec![0u8; 1 << 16];
+                    for index in (worker..total).step_by(threads) {
+                        if failure.lock().unwrap().is_some() {
+                            return Ok(());
+                        }
+                        let mut entry = zip.by_index(index).map_err(|error| error.to_string())?;
+                        let count = done.fetch_add(1, Ordering::Relaxed) + 1;
+                        if count % 128 == 0 || count as usize == total {
+                            patch::report(progress, "Extraction", step, count, total as u64);
+                        }
+                        if entry.is_dir() {
+                            continue;
+                        }
+                        let Some(relative) = entry.enclosed_name() else { continue };
+                        let target = folder.join(relative);
+                        if same_file(&target, entry.size(), entry.crc32()) {
+                            continue;
+                        }
+                        let file = File::create(&target).map_err(|error| format!("{} : {error}", target.display()))?;
+                        let mut output = io::BufWriter::with_capacity(1 << 18, file);
+                        loop {
+                            let read = io::Read::read(&mut entry, &mut buffer).map_err(|error| error.to_string())?;
+                            if read == 0 {
+                                break;
+                            }
+                            io::Write::write_all(&mut output, &buffer[..read]).map_err(|error| format!("{} : {error}", target.display()))?;
+                        }
+                        io::Write::flush(&mut output).map_err(|error| error.to_string())?;
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    failure.lock().unwrap().get_or_insert(error);
+                }
+            });
+        }
+    });
+    match failure.into_inner().unwrap() {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Whether `path` already holds this zip entry (same size, same CRC-32).
+fn same_file(path: &Path, size: u64, crc: u32) -> bool {
+    match fs::metadata(path) {
+        Ok(meta) if meta.len() == size => fs::read(path).map(|bytes| crc32fast::hash(&bytes) == crc).unwrap_or(false),
+        _ => false,
+    }
 }
 
 pub fn uninstall(folder: &Path) -> Result<String, String> {
