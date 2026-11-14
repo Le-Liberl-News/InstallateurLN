@@ -933,7 +933,7 @@ impl App {
         let Some(state) = self.state(project) else {
             // Floppies translated here, a patch the site distributes, or one still in the works.
             if self.recipe(project).is_some_and(|recipe| recipe.local()) {
-                return ("TRADUIRE MES DISQUETTES".into(), if self.job.is_none() { HomeAction::Floppies } else { HomeAction::Page });
+                return ("PATCHER MON JEU".into(), if self.job.is_none() { HomeAction::Floppies } else { HomeAction::Page });
             }
             return if project.status_label.to_lowercase().contains("termin") {
                 ("TÉLÉCHARGER LE PATCH".into(), HomeAction::Site)

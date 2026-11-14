@@ -151,6 +151,24 @@ fn hero(app: &mut App, context: &egui::Context, screen: Rect, project: &Project,
         // Opaque: the content passes under it.
         fill(&painter, &[rect.min, pos2(rect.max.x, rect.min.y), pos2(rect.max.x, rect.max.y), pos2(rect.min.x, rect.max.y)], theme.bg);
         motion::motif(&painter, Rect::from_min_size(rect.min, vec2(rect.width(), height + TABS)), theme, 1.0, 0.0);
+        let edge_a = pos2(rect.min.x, rect.min.y + height);
+        // The edge rises to the right, but never into the title: it passes under the last
+        // line's end (its baseline, plus its shadow and a margin) at any width.
+        let collapse = clamp01((HERO - height) / (HERO - HERO_SMALL));
+        let size = lerp(66.0, 40.0, collapse);
+        let font = motion::display(size);
+        let title = project.title.to_uppercase();
+        let lines = motion::wrap(&painter, &title, &font, (screen.width() - MARGIN * 2.0) * 0.7);
+        let lines: Vec<String> = if lines.len() > 2 { vec![title.clone()] } else { lines };
+        let drop = lines.last().map_or(58.0, |line| {
+            let galley = painter.layout_no_wrap(line.clone(), font.clone(), theme.ink);
+            let baseline = galley.rows.first().and_then(|row| row.glyphs.first()).map_or(size, |glyph| glyph.pos.y);
+            let bottom = rect.min.y + height - 30.0 - size + baseline + 4.0 + 8.0;
+            let end = MARGIN + galley.size().x + 4.0;
+            ((edge_a.y - 4.0 - bottom).max(0.0) * rect.width() / end.max(1.0)).min(58.0)
+        });
+        // The picture's outline follows the same edge.
+        let poly = { let mut poly = poly; poly[2].y = poly[3].y - drop; poly };
         let flight = app.flight.as_ref().filter(|flight| !flight.closing).map(|flight| (flight.from, flight.from_placed, flight.started));
         let (shape, placed) = match flight {
             Some((from, from_placed, started)) => {
@@ -169,22 +187,6 @@ fn hero(app: &mut App, context: &egui::Context, screen: Rect, project: &Project,
         // Shade for the title, then the slanted edge with its blade.
         motion::gradient_rect(&painter, Rect::from_min_max(pos2(rect.min.x, rect.min.y + height * 0.35), pos2(rect.max.x, rect.min.y + height)), alpha(theme.bg, 0.0), alpha(theme.bg, 0.92 * landed), true);
         motion::gradient_rect(&painter, Rect::from_min_max(rect.min, pos2(rect.min.x + rect.width() * 0.55, rect.min.y + height)), alpha(theme.bg, 0.75 * landed), alpha(theme.bg, 0.0), false);
-        let edge_a = pos2(rect.min.x, rect.min.y + height);
-        // The edge rises to the right, but never into the title: it passes under the last
-        // line's end (its baseline, plus its shadow and a margin) at any width.
-        let collapse = clamp01((HERO - height) / (HERO - HERO_SMALL));
-        let size = lerp(66.0, 40.0, collapse);
-        let font = motion::display(size);
-        let title = project.title.to_uppercase();
-        let lines = motion::wrap(&painter, &title, &font, (screen.width() - MARGIN * 2.0) * 0.7);
-        let lines: Vec<String> = if lines.len() > 2 { vec![title.clone()] } else { lines };
-        let drop = lines.last().map_or(58.0, |line| {
-            let galley = painter.layout_no_wrap(line.clone(), font.clone(), theme.ink);
-            let baseline = galley.rows.first().and_then(|row| row.glyphs.first()).map_or(size, |glyph| glyph.pos.y);
-            let bottom = rect.min.y + height - 30.0 - size + baseline + 4.0 + 8.0;
-            let end = MARGIN + galley.size().x + 4.0;
-            ((edge_a.y - 4.0 - bottom).max(0.0) * rect.width() / end.max(1.0)).min(58.0)
-        });
         let edge_b = pos2(rect.max.x, rect.min.y + height - drop);
         let reach = ease_out_quint(clamp01((t - 0.3) / 0.5));
         let tip = motion::lerp_pos(edge_a, edge_b, reach);
@@ -381,7 +383,7 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
                 job_progress(app, ui, theme);
             } else {
                 ui.allocate_exact_size(vec2(10.0, 56.0), Sense::hover());
-                if slant_button(ui, &painter, Id::new(("floppies", &project.id)), at, "TRADUIRE MES DISQUETTES", theme, app.job.is_none(), 1.0, app.now) {
+                if slant_button(ui, &painter, Id::new(("floppies", &project.id)), at, "PATCHER MON JEU", theme, app.job.is_none(), 1.0, app.now) {
                     pick_floppies(app, ui.ctx(), project);
                 }
             }
