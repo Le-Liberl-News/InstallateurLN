@@ -1203,12 +1203,12 @@ impl App {
                 if !ui.is_rect_visible(rect) {
                     continue;
                 }
-                self.grid_card(ui, index, rect, art_height, appear);
+                self.grid_card(ui, index, rect, art_height, appear, theme);
             }
         });
     }
 
-    fn grid_card(&mut self, ui: &mut egui::Ui, index: usize, rect: Rect, art_height: f32, appear: f32) {
+    fn grid_card(&mut self, ui: &mut egui::Ui, index: usize, rect: Rect, art_height: f32, appear: f32, screen: &Theme) {
         let painter = ui.painter().clone();
         let project = self.catalog.projects[index].clone();
         let theme = self.themes.of(&project.id);
@@ -1232,10 +1232,10 @@ impl App {
         // The cut corner lights up in the project's colour.
         fill(&painter, &[pos2(art.max.x - corner, art.min.y), pos2(art.max.x, art.min.y), pos2(art.max.x, art.min.y + corner)], fade(alpha(theme.accent, 0.25 + 0.75 * hover)));
         let (line, installed) = self.patch_line(&project);
-        painter.text(pos2(rect.min.x, art.max.y + 10.0), Align2::LEFT_TOP, &project.title, motion::semibold(16.0), fade(theme.ink));
+        painter.text(pos2(rect.min.x, art.max.y + 10.0), Align2::LEFT_TOP, &project.title, motion::semibold(16.0), fade(screen.ink));
         let meta = format!("{} · {} · {}", project.series.label(), project.year, project.platform);
-        painter.text(pos2(rect.min.x, art.max.y + 34.0), Align2::LEFT_TOP, meta, motion::body(12.5), fade(theme.muted));
-        painter.text(pos2(rect.max.x, art.max.y + 35.0), Align2::RIGHT_TOP, line, motion::semibold(10.5), fade(if installed { theme.accent } else { theme.muted }));
+        painter.text(pos2(rect.min.x, art.max.y + 34.0), Align2::LEFT_TOP, meta, motion::body(12.5), fade(screen.muted));
+        painter.text(pos2(rect.max.x, art.max.y + 35.0), Align2::RIGHT_TOP, line, motion::semibold(10.5), fade(if !installed { screen.muted } else if theme.light == screen.light { theme.accent } else { screen.accent }));
         if response.hovered() {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         }
