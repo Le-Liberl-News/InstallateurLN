@@ -62,6 +62,12 @@ impl Project {
         self.images.first().cloned().or_else(|| self.banner.clone())
     }
 
+    /// Where the big picture's subject is, across it (0 left, 1 right): that point is put in the
+    /// middle of what the home shows of a wide picture. ART_FOCUS, else the middle.
+    pub fn art_focus(&self) -> f32 {
+        ART_FOCUS.iter().find(|(id, _)| *id == self.id).map(|(_, focus)| *focus).unwrap_or(0.5)
+    }
+
     /// The small picture of lists and cards.
     pub fn thumbnail(&self) -> Option<String> {
         if let Some(id) = self.steam_id {
@@ -134,6 +140,10 @@ const KNOWN: &[(&str, &str, u32, &[&str])] = &[
     ("asteka", "Asteka", 0, &["asteka"]),
     ("dolce-traccia", "Dolce Traccia", 0, &["dolce traccia"]),
 ];
+
+/// Per catalogue id, where the subject of its big picture is (Project::art_focus), when it is not
+/// in the middle: 0.6 shows more of the right side.
+const ART_FOCUS: &[(&str, f32)] = &[("sky-3rd", 0.68), ("zero", 0.62), ("sen_1", 0.6)];
 
 pub struct Catalog {
     pub projects: Vec<Project>,

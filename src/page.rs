@@ -21,7 +21,6 @@ const HERO: f32 = 380.0;
 const HERO_SMALL: f32 = 200.0;
 const TABS: f32 = 54.0;
 /// The scroll where the hero has finished shrinking: the gallery then sits right under the tabs.
-const GALLERY_STOP: f32 = HERO - HERO_SMALL;
 /// What the strip of thumbnails under the big view takes, and the air kept under it.
 const STRIP: f32 = 96.0 + 20.0;
 const SIDE: f32 = 420.0;
@@ -100,26 +99,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, screen: Rect, theme: &Theme) {
     };
     let (now, dt, reduced) = (app.now, app.dt, app.reduced);
     let mut scroll = 0.0;
-    // A gentle stop: when the wheel rests close to where the gallery fits whole under the
-    // tabs, the page slides there (only after a wheel, never while the scroll bar is held).
-    let snap_id = egui::Id::new(("gallery-stop", &project.id));
-    let anchored = tab == Tab::Overview && !media(&project).is_empty();
     if let Some(page) = &mut app.page {
         if wheel != 0.0 {
             page.scroll_target = (page.scroll_target - wheel * 1.6).clamp(0.0, page.scroll_max);
             page.scrolled_at = now;
-            ui.ctx().memory_mut(|memory| memory.data.insert_temp(snap_id, true));
-        }
-        if ui.ctx().memory(|memory| memory.data.get_temp::<bool>(snap_id)).unwrap_or(false) {
-            if now - page.scrolled_at >= 0.18 {
-                ui.ctx().memory_mut(|memory| memory.data.insert_temp(snap_id, false));
-                let stop = GALLERY_STOP.min(page.scroll_max);
-                if anchored && (page.scroll_target - stop).abs() < 110.0 {
-                    page.scroll_target = stop;
-                }
-            } else {
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
-            }
         }
         let gap = page.scroll_target - page.scroll;
         page.scroll = if reduced || gap.abs() < 0.5 { page.scroll_target } else { page.scroll + gap * (1.0 - (-dt * 14.0).exp()) };
@@ -874,7 +857,7 @@ fn gallery(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media],
     let pixel = app.themes.of(&project.id).pixel;
     let (current, previous, changed) = app.page.as_ref().map(|page| (page.gallery.min(items.len() - 1), page.gallery_previous.min(items.len() - 1), page.gallery_changed)).unwrap_or((0, 0, 0.0));
     // As big as the column allows, but never taller than what the window shows under the
-    // tabs with the strip: the whole gallery always fits at once (GALLERY_STOP).
+    // tabs with the strip: the whole gallery can be seen at once.
     let room = (app.screen.height() - (HERO_SMALL + TABS + 26.0) - STRIP).max(200.0);
     let height = (ui.available_width() * 9.0 / 16.0).min(room);
     let (view, response) = ui.allocate_exact_size(vec2(height * 16.0 / 9.0, height), Sense::click());
@@ -919,12 +902,16 @@ fn gallery(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media],
             && app.flight.is_none()
             && p >= 1.0;
         // The window's edge cuts the view by itself; only the hero must not cover it.
-        let clear = view.min.y >= app.screen.min.y + hero_height(app) + TABS && view.min.y < app.screen.max.y - 60.0;
+        let under = app.screen.min.y + hero_height(app) + TABS;
+        let clear = view.min.y >= under && view.min.y < app.screen.max.y - 60.0;
+        // Out of sight (scrolled past, under the hero, or below the window): only then it pauses.
+        // While the page moves or the hero covers part of it, it is hidden but goes on playing.
+        let gone = view.max.y < under + view.height() * 0.25 || view.min.y > app.screen.max.y - view.height() * 0.25;
         let moving = app.page.as_ref().is_some_and(|page| app.now - page.scrolled_at < 0.25 || (page.scroll_target - page.scroll).abs() >= 0.5);
         if moving {
             app.moving = true;
         }
-        app.trailer = Some(crate::video::Request { id: id.clone(), rect: view, visible: settled && clear && !moving, pause: !(settled && clear) });
+        app.trailer = Some(crate::video::Request { id: id.clone(), rect: view, visible: settled && clear && !moving, pause: !settled || gone });
         if !app.player.failed {
             painter.text(view.center(), Align2::CENTER_CENTER, "BANDE-ANNONCE", motion::display(30.0), alpha(Color32::WHITE, 0.6));
             return_strip(app, ui, project, items, theme, current, pixel, &context);

@@ -958,18 +958,37 @@ impl App {
         let url = project.key_art().filter(|url| !self.images.failed(url)).or_else(|| project.thumbnail())?;
         let size = self.images.size(&url)?;
         let pixel = self.themes.of(&project.id).pixel;
-        Some(Self::art_shape(size, pixel, poly, area, Vec2::ZERO, 1.0))
+        Some(Self::art_shape(size, pixel, project.art_focus(), poly, area, Vec2::ZERO, 1.0))
     }
 
     /// The picture's outline and placement: covering the stage, or a small picture as a poster.
-    fn art_shape(size: Vec2, pixel: bool, poly: [Pos2; 4], area: Rect, offset: Vec2, zoom: f32) -> ([Pos2; 4], Rect) {
+    #[allow(clippy::too_many_arguments)]
+    fn art_shape(size: Vec2, pixel: bool, focus: f32, poly: [Pos2; 4], area: Rect, offset: Vec2, zoom: f32) -> ([Pos2; 4], Rect) {
         if size.x < 800.0 && !pixel {
             let room = Rect::from_min_max(pos2(area.min.x + area.width() * 0.22, area.min.y + TOP + 40.0), pos2(area.max.x - 50.0, area.max.y - 90.0));
             let scale = (room.width() / size.x).min(room.height() / size.y).min(1.6);
             let placed = Rect::from_center_size(room.center(), size * scale * zoom).translate(offset);
             return (slanted(placed, SLANT * 0.3), placed);
         }
-        (poly.map(|point| point + offset), motion::cover(size, area, zoom, vec2(0.06, 0.0)).translate(offset))
+        let s = area.height() * SLANT;
+        // What is seen of the stage: right of the slant, under the top bar, left of the news tab.
+        let room = Rect::from_min_max(pos2(area.min.x + s, area.min.y + TOP), pos2(area.max.x - 44.0, area.max.y - 8.0));
+        if size.x / size.y < 2.0 {
+            // A screen (the retro games' title screens): whole, or barely cut, in what is seen;
+            // its blurred copy fills the rest of the stage.
+            let whole = (room.width() / size.x).min(room.height() / size.y);
+            let full = (room.width() / size.x).max(room.height() / size.y);
+            let placed = Rect::from_center_size(room.center(), size * full.min(whole * 1.02) * zoom).translate(offset);
+            return (poly.map(|point| point + offset), placed);
+        }
+        // A wide picture (Steam's hero art) covers the stage, its point `focus` (0..1 across the
+        // picture) in the middle of what is seen, never leaving a side bare.
+        let scale = (area.width() / size.x).max(area.height() / size.y) * zoom;
+        let shown = size * scale;
+        let middle = (area.min.x + s * 0.5 + area.max.x) * 0.5;
+        let left = (middle - focus * shown.x).clamp(area.max.x - shown.x, area.min.x);
+        let placed = Rect::from_min_size(pos2(left, area.center().y - shown.y * 0.5), shown);
+        (poly.map(|point| point + offset), placed.translate(offset))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -977,6 +996,7 @@ impl App {
     fn draw_art(&mut self, painter: &egui::Painter, index: usize, poly: &[Pos2; 4], area: Rect, offset: Vec2, opacity: f32, zoom: f32) -> Option<Rect> {
         let project = &self.catalog.projects[index];
         let project_id = project.id.clone();
+        let focus = project.art_focus();
         let pixel = self.themes.of(&project.id).pixel;
         let mut url = project.key_art()?;
         if self.images.failed(&url) {
@@ -989,7 +1009,20 @@ impl App {
             self.moving = true;
         }
         let tint = Color32::from_white_alpha((255.0 * opacity * arrived) as u8);
-        let (shape, placed) = Self::art_shape(size, pixel, *poly, area, offset, zoom);
+        let (shape, placed) = Self::art_shape(size, pixel, focus, *poly, area, offset, zoom);
+        let blur = self.images.blur(&url);
+        if size.x >= 800.0 || pixel {
+            if let (Some(blur), false) = (blur, placed.contains_rect(Rect::from_points(&shape))) {
+                // A screen that does not cover the stage: its blurred copy behind, its edges fading.
+                let bounds = Rect::from_points(&shape);
+                let dim = Color32::from_white_alpha((255.0 * opacity * arrived * 0.8) as u8);
+                motion::image_in(painter, blur, motion::cover(size, bounds, zoom * 1.08, Vec2::ZERO), &shape, dim);
+                let visible = placed.intersect(bounds);
+                let fade = (visible.width().min(visible.height()) * 0.05).clamp(2.0, 16.0);
+                motion::image_soft(painter, texture, placed, visible, fade, tint);
+                return Some(placed);
+            }
+        }
         if size.x < 800.0 && !pixel {
             // A small picture is not blown up: shown crisp, as a poster in a slanted frame.
             let frame = slanted(placed.expand(10.0), SLANT * 0.3);
@@ -1262,7 +1295,7 @@ impl App {
         ];
         let counts: Vec<usize> = filters.iter().map(|(filter, _)| count_of(*filter)).collect();
         for ((filter, label), count) in filters.into_iter().zip(counts) {
-            let text = format!("{label}  {count}");
+            let text = format!("{label} ({count})");
             let width = spaced_width(&painter, &text, &motion::semibold(12.0), 1.6) + 30.0;
             let rect = Rect::from_min_size(pos2(x, y), vec2(width, 30.0));
             let response = ui.interact(rect, Id::new(("filter", label)), Sense::click());
