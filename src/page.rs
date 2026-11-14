@@ -369,11 +369,13 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
         ui.label(RichText::new(format!("{} · {}", project.platform, project.year)).color(theme.muted));
         ui.add_space(18.0);
         let painter = ui.painter().clone();
-        let at = ui.cursor().min;
         let recipe = app.recipe(project).filter(crate::retro::Recipe::local);
         if let Some(version) = recipe.as_ref().and_then(|recipe| recipe.version.clone()) {
             ui.label(RichText::new(format!("Patch {version}")).color(theme.muted));
+            ui.add_space(8.0);
         }
+        // The button goes under what was just written (never over it).
+        let at = ui.cursor().min;
         let ours = app.job.as_ref().is_some_and(|job| job.project == project.id);
         if let Some(link) = project.link.clone().filter(|_| project.series == crate::catalog::Series::Other) {
             // A creation: played in the browser.
@@ -643,7 +645,7 @@ fn related(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
     if let Some(url) = &article.illustration {
         let context = ui.ctx().clone();
         if let Some((texture, size, _)) = app.images.get(&context, url, false) {
-            motion::image_in(&painter, texture.id(), motion::cover(size, picture, 1.0 + 0.05 * hover, Vec2::ZERO), &shape, Color32::WHITE);
+            motion::image_in(&painter, texture.id(), motion::cover(size, motion::upright(picture, SLANT * 0.6), 1.0 + 0.05 * hover, Vec2::ZERO), &shape, Color32::WHITE);
         }
     }
     let x = picture.max.x + 16.0 + 4.0 * hover;

@@ -129,17 +129,94 @@ pub fn cover(size: Vec2, area: Rect, zoom: f32, pan: Vec2) -> Rect {
 }
 
 /// The picture laid on `placed` (screen rectangle of the whole picture), shown only inside the
-/// convex polygon `points`: cut, never stretched.
+/// convex polygon `points`: cut, never stretched. Where the polygon goes past the picture, nothing
+/// is drawn (no smeared edge pixels), and its edges fade over about a pixel, so a slanted cut is
+/// as smooth as egui's own shapes (a textured mesh gets no anti-aliasing of its own).
 pub fn image_in(painter: &Painter, texture: TextureId, placed: Rect, points: &[Pos2], tint: Color32) {
-    let mut mesh = egui::Mesh::with_texture(texture);
-    for point in points {
-        let uv = pos2((point.x - placed.min.x) / placed.width(), (point.y - placed.min.y) / placed.height());
-        mesh.vertices.push(egui::epaint::Vertex { pos: *point, uv, color: tint });
+    let polygon = clip_to_rect(points, placed);
+    if polygon.len() < 3 {
+        return;
     }
-    for index in 1..points.len().saturating_sub(1) as u32 {
-        mesh.add_triangle(0, index, index + 1);
+    // Winding, so the normals point outwards.
+    let area: f32 = (0..polygon.len()).map(|i| {
+        let (a, b) = (polygon[i], polygon[(i + 1) % polygon.len()]);
+        a.x * b.y - b.x * a.y
+    }).sum();
+    let outward = if area > 0.0 { 1.0 } else { -1.0 };
+    let normal = |a: Pos2, b: Pos2| {
+        let d = (b - a).normalized();
+        vec2(d.y, -d.x) * -outward
+    };
+    let feather = 1.0 / painter.ctx().pixels_per_point();
+    let uv = |point: Pos2| pos2(((point.x - placed.min.x) / placed.width()).clamp(0.0, 1.0), ((point.y - placed.min.y) / placed.height()).clamp(0.0, 1.0));
+    let clear = Color32::from_rgba_premultiplied(0, 0, 0, 0);
+    let mut mesh = egui::Mesh::with_texture(texture);
+    let count = polygon.len();
+    for i in 0..count {
+        let (previous, point, next) = (polygon[(i + count - 1) % count], polygon[i], polygon[(i + 1) % count]);
+        let (n1, n2) = (normal(previous, point), normal(point, next));
+        let mut miter = (n1 + n2).normalized();
+        let cos = miter.dot(n1).max(0.3);
+        miter /= cos;
+        let inner = point - miter * feather * 0.5;
+        let outer = point + miter * feather * 0.5;
+        mesh.vertices.push(egui::epaint::Vertex { pos: inner, uv: uv(inner), color: tint });
+        mesh.vertices.push(egui::epaint::Vertex { pos: outer, uv: uv(point), color: clear });
+    }
+    let count = count as u32;
+    for i in 1..count - 1 {
+        mesh.add_triangle(0, 2 * i, 2 * (i + 1));
+    }
+    for i in 0..count {
+        let j = (i + 1) % count;
+        mesh.add_triangle(2 * i, 2 * i + 1, 2 * j + 1);
+        mesh.add_triangle(2 * i, 2 * j + 1, 2 * j);
     }
     painter.add(Shape::mesh(mesh));
+}
+
+/// The whole picture inside `area` (no part cut), zoomed by `zoom`.
+pub fn contain(size: Vec2, area: Rect, zoom: f32) -> Rect {
+    let scale = (area.width() / size.x).min(area.height() / size.y) * zoom;
+    Rect::from_center_size(area.center(), size * scale)
+}
+
+/// The upright part of a slanted rectangle (`slanted(rect, slant)`): a thumbnail covering it is
+/// never cut by the slant, which leaves the frame's colour in its two corners instead.
+pub fn upright(rect: Rect, slant: f32) -> Rect {
+    rect.shrink2(vec2(rect.height() * slant / 2.0, 0.0))
+}
+
+/// A convex polygon cut by a rectangle (Sutherland–Hodgman), without repeated points.
+fn clip_to_rect(points: &[Pos2], rect: Rect) -> Vec<Pos2> {
+    let mut polygon = points.to_vec();
+    let edges: [(fn(Pos2, Rect) -> f32, ); 4] = [
+        (|p, r| p.x - r.min.x,),
+        (|p, r| r.max.x - p.x,),
+        (|p, r| p.y - r.min.y,),
+        (|p, r| r.max.y - p.y,),
+    ];
+    for (inside,) in edges {
+        if polygon.is_empty() {
+            break;
+        }
+        let input = std::mem::take(&mut polygon);
+        for i in 0..input.len() {
+            let (a, b) = (input[i], input[(i + 1) % input.len()]);
+            let (da, db) = (inside(a, rect), inside(b, rect));
+            if da >= 0.0 {
+                polygon.push(a);
+            }
+            if (da >= 0.0) != (db >= 0.0) {
+                polygon.push(a + (b - a) * (da / (da - db)));
+            }
+        }
+    }
+    polygon.dedup_by(|a, b| a.distance(*b) < 0.05);
+    while polygon.len() > 1 && polygon[0].distance(polygon[polygon.len() - 1]) < 0.05 {
+        polygon.pop();
+    }
+    polygon
 }
 
 /// The theme's motif, faint, over `rect`. `shift`: parallax during transitions.
@@ -270,6 +347,53 @@ pub enum Icon {
     Left,
     Right,
     Close,
+    Help,
+}
+
+/// A filled outline seen whole from its centre (fan of triangles), with a thin stroke of the same
+/// colour around it for a smooth edge.
+fn silhouette(painter: &Painter, c: Pos2, points: &[Pos2], colour: Color32) {
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(c, colour);
+    for point in points {
+        mesh.colored_vertex(*point, colour);
+    }
+    let n = points.len() as u32;
+    for i in 0..n {
+        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+    }
+    painter.add(Shape::mesh(mesh));
+    painter.add(Shape::closed_line(points.to_vec(), Stroke::new(0.8, colour)));
+}
+
+/// An icon on a background of colour `back` (the logos cut holes in themselves with it).
+pub fn icon_on(painter: &Painter, icon: Icon, c: Pos2, s: f32, colour: Color32, back: Color32) {
+    let h = s / 2.0;
+    match icon {
+        Icon::Discord => {
+            // Clyde: the horns, the round cheeks, the feet, and the eyes.
+            const OUTLINE: [(f32, f32); 26] = [
+                (-0.62, -0.74), (-0.38, -0.63), (-0.14, -0.57), (0.14, -0.57), (0.38, -0.63), (0.62, -0.74),
+                (0.80, -0.50), (0.93, -0.15), (1.0, 0.22), (0.98, 0.50), (0.86, 0.62), (0.70, 0.74),
+                (0.58, 0.56), (0.48, 0.44), (0.22, 0.50), (0.0, 0.51), (-0.22, 0.50), (-0.48, 0.44),
+                (-0.58, 0.56), (-0.70, 0.74), (-0.86, 0.62), (-0.98, 0.50), (-1.0, 0.22), (-0.93, -0.15),
+                (-0.80, -0.50), (-0.70, -0.64),
+            ];
+            let points: Vec<Pos2> = OUTLINE.iter().map(|(x, y)| c + vec2(x * h, y * h)).collect();
+            silhouette(painter, c, &points, colour);
+            for side in [-1.0, 1.0] {
+                painter.add(Shape::ellipse_filled(c + vec2(side * 0.36 * h, 0.06 * h), vec2(0.16 * h, 0.19 * h), back));
+            }
+        }
+        Icon::X => {
+            // The thick stroke is hollow, the thin one passes under it.
+            let thin = Stroke::new((s / 9.0).max(1.4), colour);
+            painter.line_segment([c + vec2(0.80 * h, -0.92 * h), c + vec2(-0.80 * h, 0.92 * h)], thin);
+            let band = vec![c + vec2(-0.92 * h, -0.92 * h), c + vec2(-0.40 * h, -0.92 * h), c + vec2(0.92 * h, 0.92 * h), c + vec2(0.40 * h, 0.92 * h)];
+            painter.add(Shape::convex_polygon(band.clone(), back, Stroke::new((s / 11.0).max(1.2), colour)));
+        }
+        _ => self::icon(painter, icon, c, s, colour),
+    }
 }
 
 /// A small vector icon centred on `c`, `s` pixels wide.
@@ -336,6 +460,10 @@ pub fn icon(painter: &Painter, icon: Icon, c: Pos2, s: f32, colour: Color32) {
         Icon::Close => {
             painter.line_segment([c + vec2(-h * 0.7, -h * 0.7), c + vec2(h * 0.7, h * 0.7)], stroke);
             painter.line_segment([c + vec2(h * 0.7, -h * 0.7), c + vec2(-h * 0.7, h * 0.7)], stroke);
+        }
+        Icon::Help => {
+            painter.circle_stroke(c, h, stroke);
+            painter.text(c + vec2(0.0, s * 0.03), Align2::CENTER_CENTER, "?", semibold(s * 0.78), colour);
         }
     }
 }

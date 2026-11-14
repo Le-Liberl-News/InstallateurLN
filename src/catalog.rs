@@ -10,6 +10,7 @@ pub const SITE: &str = "https://leliberlnews.fr";
 pub const LAUNCHER_URL: &str = "https://leliberlnews.fr/api/launcher.php";
 pub const DISCORD: &str = "https://discord.gg/3jSCpGJDSd";
 pub const X: &str = "https://x.com/SoraNoKisekiFR";
+pub const HELP: &str = "https://leliberlnews.fr/tutos/help.html";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Series {

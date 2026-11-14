@@ -31,8 +31,9 @@ const PANEL_FROM: f32 = 1240.0;
 const PANEL: f32 = 392.0;
 const BAND: f32 = 172.0;
 const NEWS_WIDTH: f32 = 380.0;
-const CARD: Vec2 = Vec2::new(176.0, 92.0);
-const CARD_STEP: f32 = 196.0;
+// Close to the site's thumbnails (about 2.1:1 once the slant is set aside): shown whole.
+const CARD: Vec2 = Vec2::new(200.0, 92.0);
+const CARD_STEP: f32 = 220.0;
 /// Seconds of a theme change.
 const THEME_TIME: f32 = 0.62;
 pub const OPEN_TIME: f32 = 0.55;
@@ -134,6 +135,10 @@ pub struct App {
     pub mode_changed: f64,
     pub page: Option<Page>,
     pub flight: Option<Flight>,
+    /// The news column (wide windows): folded by default, opened by its tab.
+    pub news_open: bool,
+    /// How open it is this frame (0 folded, 1 open), animated.
+    pub news_shown: f32,
     pub selected: usize,
     pub previous: usize,
     pub direction: f32,
@@ -253,6 +258,8 @@ impl App {
             mode_changed: -10.0,
             page: None,
             flight: None,
+            news_open: false,
+            news_shown: 0.0,
             selected: 0,
             previous: 0,
             direction: 1.0,
@@ -703,7 +710,11 @@ impl App {
     }
 
     fn discover(&mut self, ui: &mut egui::Ui, full: Rect, theme: &Theme) {
-        let (screen, panel) = Self::split(full);
+        self.news_shown = if self.reduced { if self.news_open { 1.0 } else { 0.0 } } else { ui.ctx().animate_bool_with_time(Id::new("news-open"), self.news_open, 0.32) };
+        if self.news_shown > 0.0 && self.news_shown < 1.0 {
+            self.moving = true;
+        }
+        let (screen, panel) = self.split(full);
         let painter = ui.painter().clone();
         let p = self.progress(self.changed, THEME_TIME);
         let d = self.direction;
@@ -778,10 +789,13 @@ impl App {
         } else {
             let mut delay = 0.0;
             for line in &lines {
-                if self.reduced || t > delay + line.chars().count() as f32 * 0.022 + 0.45 {
+                // Once its last letter has landed, the line is drawn whole (the same picture).
+                if self.reduced || t > delay + line.chars().count() as f32 * 0.022 + 0.56 {
                     painter.text(pos2(left + 4.0, y + 4.0), Align2::LEFT_TOP, line, font.clone(), alpha(theme.accent2, 0.55));
                     painter.text(pos2(left, y), Align2::LEFT_TOP, line, font.clone(), theme.ink);
                 } else {
+                    // Each letter rises with its shadow, so the shadow never pops in at the end.
+                    motion::letters(&painter, pos2(left + 4.0, y + 4.0), line, font.clone(), alpha(theme.accent2, 0.55), t - 0.12 - delay, 0.022, false);
                     motion::letters(&painter, pos2(left, y), line, font.clone(), theme.ink, t - 0.12 - delay, 0.022, false);
                 }
                 delay += 0.08;
@@ -847,19 +861,47 @@ impl App {
             }
         }
 
-        self.band(ui, screen, theme, panel.is_none());
+        let wide = full.width() >= PANEL_FROM;
+        self.band(ui, screen, theme, !wide);
         if let Some(panel) = panel {
             self.news_panel(ui, panel, theme);
         }
+        if wide {
+            self.news_tab(ui, pos2(screen.max.x, full.min.y + TOP + 64.0), theme);
+        }
     }
 
-    /// The home's stage, and the news column beside it when the window is wide.
-    pub fn split(screen: Rect) -> (Rect, Option<Rect>) {
-        if screen.width() < PANEL_FROM {
+    /// The home's stage, and the news column beside it when the window is wide and the column
+    /// open (it slides in from the right: its rectangle keeps its width, partly off the window).
+    pub fn split(&self, screen: Rect) -> (Rect, Option<Rect>) {
+        if screen.width() < PANEL_FROM || self.news_shown <= 0.0 {
             return (screen, None);
         }
-        let stage = Rect::from_min_max(screen.min, pos2(screen.max.x - PANEL, screen.max.y));
-        (stage, Some(Rect::from_min_max(pos2(stage.max.x, screen.min.y), screen.max)))
+        let open = PANEL * ease_out(self.news_shown);
+        let stage = Rect::from_min_max(screen.min, pos2(screen.max.x - open, screen.max.y));
+        (stage, Some(Rect::from_min_size(pos2(stage.max.x, screen.min.y), vec2(PANEL, screen.height()))))
+    }
+
+    /// The tab on the stage's right edge that unfolds (or folds) the news.
+    fn news_tab(&mut self, ui: &mut egui::Ui, edge: Pos2, theme: &Theme) {
+        let painter = ui.painter().clone();
+        let rect = Rect::from_min_size(pos2(edge.x - 34.0, edge.y), vec2(34.0, 132.0));
+        let response = ui.interact(rect, Id::new("news-tab"), Sense::click());
+        let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.14);
+        let shape = [rect.min + vec2(0.0, 10.0), pos2(rect.max.x, rect.min.y), rect.max, pos2(rect.min.x, rect.max.y - 10.0)];
+        fill(&painter, &shape.map(|p| p + vec2(-4.0, 4.0)), alpha(theme.accent2, 0.6 + 0.4 * hover));
+        fill(&painter, &shape, mix(theme.accent, Color32::WHITE, 0.12 * hover));
+        let arrow = if self.news_open { Icon::Right } else { Icon::Left };
+        motion::icon(&painter, arrow, pos2(rect.center().x - 2.0 * hover, rect.min.y + 26.0), 11.0, theme.bg);
+        let galley = painter.layout_no_wrap("NOUVELLES".to_string(), motion::semibold(11.0), theme.bg);
+        let at = pos2(rect.center().x - galley.size().y / 2.0, rect.max.y - 18.0);
+        painter.add(egui::epaint::TextShape::new(at, galley, theme.bg).with_angle(-std::f32::consts::FRAC_PI_2));
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        if response.on_hover_text(if self.news_open { "Replier les nouvelles" } else { "Afficher les nouvelles" }).clicked() {
+            self.news_open = !self.news_open;
+        }
     }
 
     /// What the home's button does for a project.
@@ -911,7 +953,7 @@ impl App {
 
     /// Where the home's picture lies for a project, as draw_art lays it (None until it is loaded).
     pub fn art_target(&self, index: usize, full: Rect) -> Option<([Pos2; 4], Rect)> {
-        let (poly, area) = Self::art_geometry(Self::split(full).0);
+        let (poly, area) = Self::art_geometry(self.split(full).0);
         let project = self.catalog.projects.get(index)?;
         let url = project.key_art().filter(|url| !self.images.failed(url)).or_else(|| project.thumbnail())?;
         let size = self.images.size(&url)?;
@@ -1020,7 +1062,7 @@ impl App {
             if let Some(url) = project.thumbnail() {
                 let context = ui.ctx().clone();
                 if let Some((texture, image, _)) = self.images.get(&context, &url, card_theme.pixel) {
-                    let placed = motion::cover(image, rect, 1.0 + 0.05 * lift, Vec2::ZERO);
+                    let placed = motion::contain(image, motion::upright(rect, SLANT * 0.5), 1.0 + 0.05 * lift);
                     let shade = (150.0 + 105.0 * active.max(lift)) as u8;
                     motion::image_in(&clip, texture.id(), placed, &shape, Color32::from_rgb(shade, shade, shade));
                 }
@@ -1143,12 +1185,13 @@ impl App {
             let response = ui.interact(row, Id::new(("panel-news", index)), Sense::click());
             let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.18);
             let picture = if first { Rect::from_min_size(pos2(x, y), vec2(width, width * 0.5625)) } else { Rect::from_min_size(pos2(x, y + 4.0), vec2(96.0, 60.0)) };
-            let cut = slanted(picture, SLANT * if first { 0.25 } else { 0.5 });
+            let lean = SLANT * if first { 0.25 } else { 0.5 };
+            let cut = slanted(picture, lean);
             fill(&painter, &cut.map(|p| p + vec2(5.0, 5.0)), alpha(theme.accent2, 0.35 + 0.5 * hover));
             fill(&painter, &cut, theme.shade(0.15));
             if let Some(url) = &article.illustration {
                 if let Some((texture, size, _)) = self.images.get(&context, url, false) {
-                    motion::image_in(&painter, texture.id(), motion::cover(size, picture, 1.0 + 0.05 * hover, Vec2::ZERO), &cut, Color32::WHITE);
+                    motion::image_in(&painter, texture.id(), motion::cover(size, motion::upright(picture, lean), 1.0 + 0.05 * hover, Vec2::ZERO), &cut, Color32::WHITE);
                 }
             }
             let (tx, ty, tw) = if first { (x, picture.max.y + 12.0, width) } else { (picture.max.x + 16.0, y + 4.0, width - 112.0) };
@@ -1418,10 +1461,13 @@ impl App {
 
                 // The community, then the search.
                 let mut right = rect.max.x - 34.0;
+                // From the right: the help, the site, the Discord, X (X never next to the corner,
+                // where it would read as a close button).
                 for (icon, url, tip) in [
-                    (Icon::X, catalog::X, "Le Liberl News sur X"),
-                    (Icon::Discord, catalog::DISCORD, "Le Discord du Liberl News"),
+                    (Icon::Help, catalog::HELP, "Aide (sur le site)"),
                     (Icon::Globe, catalog::SITE, "Le site du Liberl News"),
+                    (Icon::Discord, catalog::DISCORD, "Le Discord du Liberl News"),
+                    (Icon::X, catalog::X, "Le Liberl News sur X"),
                 ] {
                     let spot = Rect::from_center_size(pos2(right - 10.0, rect.center().y), vec2(34.0, 32.0));
                     let response = ui.interact(spot, Id::new(("social", tip)), Sense::click());
@@ -1429,7 +1475,7 @@ impl App {
                     let chip = slanted(spot.shrink(1.0), SLANT);
                     fill(&painter, &chip.map(|p| p + vec2(3.0, 3.0)), alpha(theme.accent2, 0.5 + 0.5 * hover));
                     fill(&painter, &chip, mix(theme.bg, theme.accent, hover));
-                    motion::icon(&painter, icon, spot.center(), 15.0, mix(theme.ink, theme.bg, hover));
+                    motion::icon_on(&painter, icon, spot.center(), if matches!(icon, Icon::Discord) { 18.0 } else { 15.0 }, mix(theme.ink, theme.bg, hover), mix(theme.bg, theme.accent, hover));
                     if response.hovered() {
                         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                     }
@@ -1511,7 +1557,13 @@ impl App {
 /// The main slanted button: a hard shadow, a blade of light crossing it on hover, sinks when pressed.
 #[allow(clippy::too_many_arguments)]
 pub fn slant_button(ui: &mut egui::Ui, painter: &egui::Painter, id: Id, at: Pos2, label: &str, theme: &Theme, enabled: bool, appear: f32, now: f64) -> bool {
-    let font = motion::display(21.0);
+    // As large as it can be, but never wider than its column: a long label gets a smaller font.
+    let room = ui.available_width().max(160.0) - 12.0;
+    let mut size = 21.0;
+    while size > 14.0 && spaced_width(painter, label, &motion::display(size), 1.4) + 56.0 > room {
+        size -= 1.0;
+    }
+    let font = motion::display(size);
     let width = spaced_width(painter, label, &font, 1.4) + 56.0;
     let rect = Rect::from_min_size(at, vec2(width, 48.0));
     let response = ui.interact(rect, id, if enabled { Sense::click() } else { Sense::hover() });
