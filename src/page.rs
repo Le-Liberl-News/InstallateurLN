@@ -20,6 +20,10 @@ use eframe::egui::{self, Align2, Color32, CursorIcon, Id, Order, Pos2, Rect, Ric
 const HERO: f32 = 380.0;
 const HERO_SMALL: f32 = 200.0;
 const TABS: f32 = 54.0;
+/// The scroll where the hero has finished shrinking: the gallery then sits right under the tabs.
+const GALLERY_STOP: f32 = HERO - HERO_SMALL;
+/// What the strip of thumbnails under the big view takes, and the air kept under it.
+const STRIP: f32 = 96.0 + 20.0;
 const SIDE: f32 = 420.0;
 const MARGIN: f32 = 56.0;
 const RED: Color32 = Color32::from_rgb(0xff, 0x6b, 0x5e);
@@ -96,10 +100,26 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, screen: Rect, theme: &Theme) {
     };
     let (now, dt, reduced) = (app.now, app.dt, app.reduced);
     let mut scroll = 0.0;
+    // A gentle stop: when the wheel rests close to where the gallery fits whole under the
+    // tabs, the page slides there (only after a wheel, never while the scroll bar is held).
+    let snap_id = egui::Id::new(("gallery-stop", &project.id));
+    let anchored = tab == Tab::Overview && !media(&project).is_empty();
     if let Some(page) = &mut app.page {
         if wheel != 0.0 {
             page.scroll_target = (page.scroll_target - wheel * 1.6).clamp(0.0, page.scroll_max);
             page.scrolled_at = now;
+            ui.ctx().memory_mut(|memory| memory.data.insert_temp(snap_id, true));
+        }
+        if ui.ctx().memory(|memory| memory.data.get_temp::<bool>(snap_id)).unwrap_or(false) {
+            if now - page.scrolled_at >= 0.18 {
+                ui.ctx().memory_mut(|memory| memory.data.insert_temp(snap_id, false));
+                let stop = GALLERY_STOP.min(page.scroll_max);
+                if anchored && (page.scroll_target - stop).abs() < 110.0 {
+                    page.scroll_target = stop;
+                }
+            } else {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
+            }
         }
         let gap = page.scroll_target - page.scroll;
         page.scroll = if reduced || gap.abs() < 0.5 { page.scroll_target } else { page.scroll + gap * (1.0 - (-dt * 14.0).exp()) };
@@ -850,8 +870,11 @@ pub fn play(app: &App, project: &Project) {
 fn gallery(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media], theme: &Theme) {
     let pixel = app.themes.of(&project.id).pixel;
     let (current, previous, changed) = app.page.as_ref().map(|page| (page.gallery.min(items.len() - 1), page.gallery_previous.min(items.len() - 1), page.gallery_changed)).unwrap_or((0, 0, 0.0));
-    let width = ui.available_width();
-    let (view, response) = ui.allocate_exact_size(vec2(width, width * 9.0 / 16.0), Sense::click());
+    // As big as the column allows, but never taller than what the window shows under the
+    // tabs with the strip: the whole gallery always fits at once (GALLERY_STOP).
+    let room = (app.screen.height() - (HERO_SMALL + TABS + 26.0) - STRIP).max(200.0);
+    let height = (ui.available_width() * 9.0 / 16.0).min(room);
+    let (view, response) = ui.allocate_exact_size(vec2(height * 16.0 / 9.0, height), Sense::click());
     let painter = ui.painter().clone();
     painter.rect_filled(view, 0.0, alpha(Color32::BLACK, 0.55));
     let context = ui.ctx().clone();
