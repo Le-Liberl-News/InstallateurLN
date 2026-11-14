@@ -322,12 +322,21 @@ fn overview(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme, 
     // The patch's column follows the page while the hero shrinks, then stays under the tabs
     // (it holds what matters most), as long as the page is longer than it.
     let scroll = app.page.as_ref().map(|page| page.scroll).unwrap_or(0.0);
-    // Its top (the buttons) always stays under the tabs; the page grows only by what the
-    // window can show of it, so the scrolling still ends with the page.
-    let sticky = (scroll - (HERO - HERO_SMALL)).max(0.0);
+    // A column taller than the window first scrolls with the page until its end shows, then
+    // stays there; it never slides past the end of the page, and the page is at least as tall
+    // as the column, so all of it can always be reached.
     let visible_part = (app.screen.height() - (HERO_SMALL + TABS + 26.0 + 60.0)).max(0.0);
+    let id = egui::Id::new(("side-height", &project.id));
+    let last = ui.ctx().memory(|memory| memory.data.get_temp::<f32>(id)).unwrap_or(0.0);
+    let overflow = (last - visible_part).max(0.0);
+    let room = (y - top - last).max(0.0);
+    let sticky = (scroll - (HERO - HERO_SMALL) - overflow).max(0.0).min(room);
     let side_height = place(ui, side_x, top + sticky, side, reveal(t, 0), |ui| action_panel(app, ui, project, theme));
-    let bottom = y.max(top + sticky + side_height.min(visible_part));
+    if (side_height - last).abs() > 0.5 {
+        ui.ctx().memory_mut(|memory| memory.data.insert_temp(id, side_height));
+        ui.ctx().request_repaint();
+    }
+    let bottom = y.max(top + side_height);
     ui.allocate_exact_size(vec2(1.0, bottom - top), Sense::hover());
 }
 
