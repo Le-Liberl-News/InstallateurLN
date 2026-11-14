@@ -805,15 +805,11 @@ impl App {
         } else {
             let mut delay = 0.0;
             for line in &lines {
-                // Once its last letter has landed, the line is drawn whole (the same picture).
-                if self.reduced || t > delay + line.chars().count() as f32 * 0.022 + 0.56 {
-                    painter.text(pos2(left + 4.0, y + 4.0), Align2::LEFT_TOP, line, font.clone(), alpha(theme.accent2, 0.55));
-                    painter.text(pos2(left, y), Align2::LEFT_TOP, line, font.clone(), theme.ink);
-                } else {
-                    // Each letter rises with its shadow, so the shadow never pops in at the end.
-                    motion::letters(&painter, pos2(left + 4.0, y + 4.0), line, font.clone(), alpha(theme.accent2, 0.55), t - 0.12 - delay, 0.022, false);
-                    motion::letters(&painter, pos2(left, y), line, font.clone(), theme.ink, t - 0.12 - delay, 0.022, false);
-                }
+                // Letter by letter, with its shadow, even once landed: drawing the line whole
+                // instead places some letters a pixel or more aside (display scaling).
+                let local = if self.reduced { 99.0 } else { t - 0.12 - delay };
+                motion::letters(&painter, pos2(left + 4.0, y + 4.0), line, font.clone(), alpha(theme.accent2, 0.55), local, 0.022, false);
+                motion::letters(&painter, pos2(left, y), line, font.clone(), theme.ink, local, 0.022, false);
                 delay += 0.08;
                 y += size * 1.0;
             }
