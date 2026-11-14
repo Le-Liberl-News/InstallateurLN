@@ -312,3 +312,24 @@ mod tests {
         assert_eq!(split_d88(&odd).len(), 1);
     }
 }
+
+#[cfg(test)]
+mod online {
+    /// The whole chain against the platform: recipe, archive, unzip, recognition.
+    /// A floppy no recipe knows is refused with its SHA-1. (cargo test -- --ignored)
+    #[test]
+    #[ignore]
+    fn asteka_from_patchretro() {
+        let recipe = super::platform("asteka").expect("recette d'Asteka sur la plateforme");
+        assert_eq!(recipe.version.as_deref(), Some("1.0.0"));
+        let dir = std::env::temp_dir().join("ln-retro-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let disk = dir.join("inconnue.d88");
+        std::fs::write(&disk, vec![0u8; 4096]).unwrap();
+        let progress = crate::patch::Shared::default();
+        let error = super::translate("Asteka", &recipe, &[disk], &progress).unwrap_err();
+        assert!(error.contains("Aucune disquette reconnue"), "{error}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
