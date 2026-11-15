@@ -147,7 +147,7 @@ pub fn image_in(painter: &Painter, texture: TextureId, placed: Rect, points: &[P
     let outward = if area > 0.0 { 1.0 } else { -1.0 };
     let normal = |a: Pos2, b: Pos2| {
         let d = (b - a).normalized();
-        vec2(d.y, -d.x) * -outward
+        vec2(d.y, -d.x) * outward
     };
     let feather = 1.0 / painter.ctx().pixels_per_point();
     let uv = |point: Pos2| pos2(((point.x - placed.min.x) / placed.width()).clamp(0.0, 1.0), ((point.y - placed.min.y) / placed.height()).clamp(0.0, 1.0));

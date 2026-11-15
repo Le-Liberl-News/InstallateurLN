@@ -375,13 +375,11 @@ impl App {
         }
     }
 
-    /// The public has a patch for it: a release on the platform for a game the installer
-    /// patches (a local or test patch does not count), otherwise a finished project.
+    /// The public has a patch for it: a finished project, or a release on the platform (a local
+    /// or test patch does not count).
     pub fn patch_public(&self, project: &Project) -> bool {
-        match self.state(project) {
-            Some(_) => matches!(self.release(project), Some(Ok(Some(_)))),
-            None => project.status_label.to_lowercase().contains("termin"),
-        }
+        // A finished project (the site says so) was published, by the platform or elsewhere.
+        project.status_label.to_lowercase().contains("termin") || (self.state(project).is_some() && matches!(self.release(project), Some(Ok(Some(_)))))
     }
 
     pub fn is_installed(&self, project: &Project) -> bool {
@@ -1024,7 +1022,7 @@ impl App {
             let whole = (room.width() / size.x).min(room.height() / size.y);
             let full = (room.width() / size.x).max(room.height() / size.y);
             let placed = Rect::from_center_size(room.center(), size * full.min(whole * 1.02) * zoom).translate(offset);
-            return (poly.map(|point| point + offset), placed);
+            return (poly, placed);
         }
         // A wide picture (Steam's hero art) covers the stage, its point `focus` (0..1 across the
         // picture) in the middle of what is seen, never leaving a side bare.
@@ -1033,7 +1031,8 @@ impl App {
         let middle = (area.min.x + s * 0.5 + area.max.x) * 0.5;
         let left = (middle - focus * shown.x).clamp(area.max.x - shown.x, area.min.x);
         let placed = Rect::from_min_size(pos2(left, area.center().y - shown.y * 0.5), shown);
-        (poly.map(|point| point + offset), placed.translate(offset))
+        // The picture slides inside the outline, which stays: moved with it, it went past the blade.
+        (poly, placed.translate(offset))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1138,14 +1137,18 @@ impl App {
             if active > 0.5 {
                 fill(&clip, &shape.map(|p| p + vec2(6.0, 6.0)), card_theme.accent2);
             }
-            fill(&clip, &shape, card_theme.shade(0.2));
+            // The ground only until the picture is there: under it, its edge showed as a dark,
+            // stepped rim along the slants.
+            if !project.thumbnail().is_some_and(|url| self.images.size(&url).is_some()) {
+                fill(&clip, &shape, card_theme.shade(0.2));
+            }
             if let Some(url) = project.thumbnail() {
                 let context = ui.ctx().clone();
                 if let Some((texture, image, _)) = self.images.get(&context, &url, card_theme.pixel) {
                     let texture = texture.id();
                     let shade = (150.0 + 105.0 * active.max(lift)) as u8;
                     let blur = self.images.blur(&url);
-                    motion::picture_in(&clip, texture, blur, image, &shape, motion::upright(rect, SLANT * 0.5).shrink2(vec2(0.0, 2.0)), 1.08, 1.0 + 0.05 * lift, Color32::from_rgb(shade, shade, shade));
+                    motion::picture_in(&clip, texture, blur, image, &shape, motion::upright(rect, SLANT * 0.5), 1.08, 1.0 + 0.05 * lift, Color32::from_rgb(shade, shade, shade));
                 }
             }
             let distance = clamp01(offset.abs() / 4.5);

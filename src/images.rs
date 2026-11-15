@@ -103,7 +103,13 @@ fn download(url: &str) -> Option<(ColorImage, ColorImage)> {
         image = image.resize(LARGEST, LARGEST, image::imageops::FilterType::Triangle);
     }
     // The backdrop: tiny, blurred, then smoothed again when the screen enlarges it.
-    let small = image.resize(48, 48, image::imageops::FilterType::Triangle).blur(2.5).to_rgba8();
+    // Its edges repeated before blurring and cut after: blurred as they were, they darkened
+    // (black around), a dark rim right on the frames' edges.
+    let small = image.resize(48, 48, image::imageops::FilterType::Triangle).to_rgba8();
+    let (w, h) = (small.width(), small.height());
+    let pad = 8u32;
+    let padded = image::RgbaImage::from_fn(w + pad * 2, h + pad * 2, |x, y| *small.get_pixel(x.saturating_sub(pad).min(w - 1), y.saturating_sub(pad).min(h - 1)));
+    let small = image::imageops::crop_imm(&image::imageops::blur(&padded, 2.5), pad, pad, w, h).to_image();
     let image = image.to_rgba8();
     Some((
         ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw()),

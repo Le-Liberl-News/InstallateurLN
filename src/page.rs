@@ -941,7 +941,7 @@ fn gallery(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media],
             if !live {
                 painter.text(view.center(), Align2::CENTER_CENTER, "BANDE-ANNONCE", motion::display(30.0), alpha(Color32::WHITE, 0.6));
             }
-            return_strip(app, ui, project, items, theme, current, pixel, &context);
+            return_strip(app, ui, project, items, theme, current, pixel, &context, view.width());
             return;
         }
         let play = Rect::from_center_size(view.center(), vec2(108.0 + 12.0 * hover, 64.0 + 6.0 * hover));
@@ -968,20 +968,34 @@ fn gallery(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media],
         }
     }
 
-    return_strip(app, ui, project, items, theme, current, pixel, &context);
+    return_strip(app, ui, project, items, theme, current, pixel, &context, view.width());
 }
 
 /// The strip of every medium under the big view.
 #[allow(clippy::too_many_arguments)]
-fn return_strip(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media], theme: &Theme, current: usize, pixel: bool, context: &egui::Context) {
+#[allow(clippy::too_many_arguments)]
+fn return_strip(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media], theme: &Theme, current: usize, pixel: bool, context: &egui::Context, width: f32) {
     let corners = |r: Rect| [r.min, pos2(r.max.x, r.min.y), r.max, pos2(r.min.x, r.max.y)];
-    // The strip.
+    // The strip: exactly as wide as the big view above, its thumbnails filling it (or, too
+    // many to fit, scrolling inside it).
     ui.add_space(10.0);
     let mut chosen = None;
-    egui::ScrollArea::horizontal().id_salt(("strip", &project.id)).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            for (index, item) in items.iter().enumerate() {
-                let (rect, response) = ui.allocate_exact_size(vec2(128.0, 72.0), Sense::click());
+    let gap = 8.0;
+    let count = items.len().max(1) as f32;
+    let fill = (width - gap * (count - 1.0)) / count;
+    // Too many to fit: they scroll; few: no wider than 160, the row centred.
+    let thumb = if fill < 110.0 { 128.0 } else { fill.min(160.0) };
+    let total = count * thumb + gap * (count - 1.0);
+    ui.allocate_ui(vec2(width, 90.0), |ui| {
+        ui.set_max_width(width);
+        egui::ScrollArea::horizontal().id_salt(("strip", &project.id)).max_width(width).auto_shrink([false, true]).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                if total < width {
+                    ui.add_space(((width - total) / 2.0 - gap).max(0.0));
+                }
+                for (index, item) in items.iter().enumerate() {
+                    let (rect, response) = ui.allocate_exact_size(vec2(thumb, 72.0), Sense::click());
                 if !ui.is_rect_visible(rect) {
                     continue;
                 }
@@ -1007,6 +1021,7 @@ fn return_strip(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Me
                     chosen = Some(index);
                 }
             }
+        });
         });
     });
     if let Some(index) = chosen {
