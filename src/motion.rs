@@ -337,7 +337,7 @@ pub fn letters(painter: &Painter, at: Pos2, text: &str, font: FontId, colour: Co
     let glyphs = line.rows.first().map(|row| row.glyphs.clone()).unwrap_or_default();
     for (index, glyph) in glyphs.iter().enumerate() {
         let local = if out { clamp01(t / 0.18) } else { clamp01((t - index as f32 * stagger) / 0.42) };
-        let offset = if out { -ease_in_out(local) * height } else { (1.0 - ease_out_quint(local)) * height };
+        let offset = if out { -ease_in_out(local) * height * 1.4 } else { (1.0 - ease_out_quint(local)) * height };
         // The last pixels of the ease are not crawled: the letter lands, whole pixels only.
         let offset = if out { offset.round() } else if offset < 2.5 { 0.0 } else { offset.round() };
         if (out || local > 0.0) && !glyph.chr.is_whitespace() {

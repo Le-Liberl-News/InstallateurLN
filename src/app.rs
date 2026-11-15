@@ -375,6 +375,15 @@ impl App {
         }
     }
 
+    /// The public has a patch for it: a release on the platform for a game the installer
+    /// patches (a local or test patch does not count), otherwise a finished project.
+    pub fn patch_public(&self, project: &Project) -> bool {
+        match self.state(project) {
+            Some(_) => matches!(self.release(project), Some(Ok(Some(_)))),
+            None => project.status_label.to_lowercase().contains("termin"),
+        }
+    }
+
     pub fn is_installed(&self, project: &Project) -> bool {
         self.state(project).is_some_and(|state| !matches!(state.installed, Installed::Nothing))
     }
@@ -691,9 +700,6 @@ impl App {
                     let local = ease_out(clamp01((p - j as f32 * 0.035) / 0.5));
                     let rect = Rect::from_min_size(screen.min + vec2(0.0, j as f32 * height), vec2(w * local, height + 1.0));
                     painter.rect_filled(rect, 0.0, target.bg);
-                    if local > 0.0 && local < 1.0 {
-                        painter.rect_filled(Rect::from_min_size(pos2(rect.max.x - 3.0, rect.min.y), vec2(3.0, height)), 0.0, target.accent);
-                    }
                 }
             }
         }
@@ -740,7 +746,17 @@ impl App {
         // The picture melts into the ground on its left and at its bottom.
         let s = area.height() * SLANT;
         let melt = if theme.light { 0.2 } else { 0.42 };
-        motion::gradient_rect(&painter, Rect::from_min_max(pos2(area.min.x - 2.0, area.min.y), pos2(area.min.x + s + area.width() * melt, area.max.y)), theme.bg, alpha(theme.bg, 0.0), false);
+        // From the slanted edge itself: an upright band would show left of the blade while the
+        // ground of another theme sweeps in.
+        let reach_x = s * 0.5 + area.width() * melt;
+        let mut mesh = egui::Mesh::default();
+        let clear = alpha(theme.bg, 0.0);
+        for (point, colour) in [(poly[0] - vec2(2.0, 0.0), theme.bg), (poly[0] + vec2(reach_x, 0.0), clear), (poly[3] + vec2(reach_x, 0.0), clear), (poly[3] - vec2(2.0, 0.0), theme.bg)] {
+            mesh.colored_vertex(point, colour);
+        }
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        painter.add(egui::Shape::mesh(mesh));
         motion::gradient_rect(&painter, Rect::from_min_max(pos2(area.min.x, area.max.y - area.height() * if theme.light { 0.18 } else { 0.32 }), area.max), alpha(theme.bg, 0.0), theme.bg, true);
         // The blade along its edge, with its hard shadow.
         let edge = |offset: f32, width: f32| [poly[0] + vec2(offset, 0.0), poly[0] + vec2(offset + width, 0.0), poly[3] + vec2(offset + width, 0.0), poly[3] + vec2(offset, 0.0)];
@@ -812,6 +828,17 @@ impl App {
                 motion::letters(&painter, pos2(left, y), line, font.clone(), theme.ink, local, 0.022, false);
                 delay += 0.08;
                 y += size * 1.0;
+            }
+            // The title opens the game's page, like the link under the button.
+            let widest = lines.iter().map(|line| motion::width(&painter, line, &font)).fold(0.0, f32::max);
+            let title_rect = Rect::from_min_max(pos2(left, top + 40.0), pos2(left + widest, y));
+            let response = ui.interact(title_rect, Id::new("home-title"), Sense::click());
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
+            if response.clicked() {
+                let art = self.art;
+                self.open(self.selected, art);
             }
         }
 
@@ -1577,7 +1604,7 @@ impl App {
                 let mut field = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(search.min + vec2(32.0, 7.0), search.max - vec2(10.0, 4.0))));
                 let edit = field.add(
                     egui::TextEdit::singleline(&mut self.query)
-                        .hint_text(egui::RichText::new("Rechercher un projet  (Ctrl+F)").color(alpha(theme.muted, 0.8)))
+                        .hint_text(egui::RichText::new("Rechercher un projet").color(alpha(theme.muted, 0.8)))
                         .frame(egui::Frame::NONE)
                         .text_color(theme.ink)
                         .desired_width(search.width() - 44.0),

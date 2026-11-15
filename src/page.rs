@@ -202,6 +202,20 @@ fn hero(app: &mut App, context: &egui::Context, screen: Rect, project: &Project,
         let mut y = rect.min.y + height - 30.0 - lines.len() as f32 * size;
         let kicker = format!("{}  ·  {}  ·  {}", project.series.label().to_uppercase(), project.year, project.developer.to_uppercase());
         spaced(&painter, pos2(rect.min.x + MARGIN, y - 12.0), &kicker, &motion::semibold(12.0), alpha(theme.accent, landed), 2.2);
+        // The series opens the library on its shelf (as on the home).
+        let series_label = project.series.label().to_uppercase();
+        let series_width = spaced_width(&painter, &series_label, &motion::semibold(12.0), 2.2);
+        let series_rect = Rect::from_min_size(pos2(rect.min.x + MARGIN - 4.0, y - 24.0), vec2(series_width + 8.0, 24.0));
+        let series = ui.interact(series_rect, Id::new("page-series"), Sense::click());
+        if series.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            painter.line_segment([pos2(rect.min.x + MARGIN, y - 3.0), pos2(rect.min.x + MARGIN + series_width, y - 3.0)], Stroke::new(1.2, theme.accent));
+        }
+        if series.on_hover_text("Voir la série dans la bibliothèque").clicked() {
+            app.filter = app::Filter::Series(project.series);
+            app.query.clear();
+            app.close(app::Mode::Library);
+        }
         for (row, line) in lines.iter().enumerate() {
             let local = t - 0.28 - row as f32 * 0.08;
             // Letter by letter even once landed (app.rs, the home's title: the same reason).
@@ -1127,6 +1141,18 @@ fn confirm_dialog(app: &mut App, context: &egui::Context, screen: Rect, project:
     }
 }
 
+/// A text that acts as a link: the hand and an underline under the mouse.
+fn link(ui: &mut egui::Ui, text: &str, colour: Color32) -> egui::Response {
+    let font = motion::body(15.0);
+    let (rect, response) = ui.allocate_exact_size(vec2(motion::width(ui.painter(), text, &font), 22.0), Sense::click());
+    ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, text, font, colour);
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        ui.painter().line_segment([pos2(rect.min.x, rect.max.y - 2.0), pos2(rect.max.x, rect.max.y - 2.0)], Stroke::new(1.2, colour));
+    }
+    response
+}
+
 fn reviews(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
     let state = app.reviews.get(&project.id).map(|slot| match &*slot.lock().unwrap() {
         None => 0,
@@ -1187,16 +1213,14 @@ fn reviews(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
         });
         return;
     }
+    // Reviews are for a patch the public has: none before (a local or test patch included).
+    if !app.patch_public(project) {
+        ui.label(RichText::new("Les avis s'ouvriront à la sortie publique du patch.").size(14.0).color(theme.muted));
+        return;
+    }
     let open = app.page.as_ref().is_some_and(|page| page.composer);
     if !open {
-        // A link: the hand and an underline when the mouse is on it.
-        let (rect, response) = ui.allocate_exact_size(motion::width(ui.painter(), "Écrire un avis", &motion::body(15.0)) * vec2(1.0, 0.0) + vec2(0.0, 22.0), Sense::click());
-        ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, "Écrire un avis", motion::body(15.0), theme.accent);
-        if response.hovered() {
-            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-            ui.painter().line_segment([pos2(rect.min.x, rect.max.y - 2.0), pos2(rect.max.x, rect.max.y - 2.0)], Stroke::new(1.2, theme.accent));
-        }
-        if response.clicked() {
+        if link(ui, "Écrire un avis", theme.accent).clicked() {
             if let Some(page) = &mut app.page {
                 page.composer = true;
             }
@@ -1208,22 +1232,47 @@ fn reviews(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.label(RichText::new("Votre note").color(theme.muted));
-            for star in 1..=5u8 {
-                let (rect, response) = ui.allocate_exact_size(vec2(16.0, 18.0), Sense::click());
-                let hover = response.hovered();
-                fill(ui.painter(), &slanted(rect.shrink2(vec2(2.0, 2.0)), SLANT), if star <= page.rating || hover { theme.accent } else { alpha(theme.muted, 0.3) });
+            // Under the mouse, the marks up to the hovered one fill (and only those); otherwise
+            // the chosen note.
+            let marks: Vec<(Rect, egui::Response)> = (1..=5u8).map(|_| ui.allocate_exact_size(vec2(18.0, 20.0), Sense::click())).collect();
+            let hovered = marks.iter().position(|(_, response)| response.hovered()).map(|index| index as u8 + 1);
+            let shown = hovered.unwrap_or(page.rating);
+            for (index, (rect, response)) in marks.iter().enumerate() {
+                let star = index as u8 + 1;
+                fill(ui.painter(), &slanted(rect.shrink2(vec2(3.0, 2.0)), SLANT), if star <= shown { theme.accent } else { alpha(theme.muted, 0.3) });
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                }
                 if response.clicked() {
                     page.rating = star;
                 }
             }
         });
         ui.add(egui::TextEdit::singleline(&mut page.author).hint_text("Votre pseudo").desired_width(240.0));
+        let author = page.author.trim().chars().count();
+        if author > 0 && !(2..=40).contains(&author) {
+            ui.label(RichText::new("Le pseudo fait de 2 à 40 caractères.").size(12.0).color(RED));
+        }
         ui.add(egui::TextEdit::multiline(&mut page.draft).hint_text("Ce que vous avez pensé de la traduction…").desired_rows(3).desired_width(f32::INFINITY));
+        let words = page.draft.trim().chars().count();
+        if words > 0 && !(10..=2000).contains(&words) {
+            ui.label(RichText::new(if words < 10 { "Encore quelques mots : 10 caractères au moins." } else { "2000 caractères au plus." }).size(12.0).color(RED));
+        }
         let sending = page.sending.is_some();
-        let ready = page.rating > 0 && page.author.trim().chars().count() >= 2 && page.draft.trim().chars().count() >= 10;
+        let ready = page.rating > 0 && (2..=40).contains(&author) && (10..=2000).contains(&words);
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let label = if sending { "Envoi…" } else { "Envoyer pour modération" };
-            if ui.add_enabled(ready && !sending, egui::Button::new(label)).clicked() {
+            let label = if sending { "ENVOI…" } else { "ENVOYER POUR MODÉRATION" };
+            let (rect, response) = ui.allocate_exact_size(vec2(motion::width(ui.painter(), label, &motion::semibold(13.0)) + 34.0, 32.0), Sense::click());
+            let on = ready && !sending;
+            let hover = ui.ctx().animate_bool_with_time(response.id, on && response.hovered(), 0.12);
+            fill(ui.painter(), &slanted(rect, SLANT), if on { mix(theme.accent, theme.accent2, hover * 0.35) } else { alpha(theme.muted, 0.25) });
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, motion::semibold(13.0), if on { theme.bg } else { theme.muted });
+            if on && response.hovered() {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
+            ui.add_space(12.0);
+            if on && response.clicked() {
                 let slot: crate::app::Slot<Result<(), String>> = Default::default();
                 let (inner, id, author, rating, text) = (slot.clone(), project.id.clone(), page.author.trim().to_string(), page.rating, page.draft.trim().to_string());
                 let context = ui.ctx().clone();
@@ -1234,14 +1283,12 @@ fn reviews(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
                 page.sending = Some(slot);
                 page.send_error = None;
             }
-            if ui.add(egui::Button::new(RichText::new("Annuler").color(theme.muted)).frame(false)).clicked() {
+            if link(ui, "Annuler", theme.muted).clicked() {
                 page.composer = false;
             }
         });
         if let Some(error) = &page.send_error {
             ui.label(RichText::new(error).size(13.0).color(RED));
-        } else if !ready {
-            ui.label(RichText::new("Une note, un pseudo (2 caractères au moins) et quelques mots (10 caractères au moins).").size(12.0).color(theme.muted));
         } else {
             ui.label(RichText::new("Votre avis sera publié après relecture par l'équipe.").size(12.0).color(theme.muted));
         }
