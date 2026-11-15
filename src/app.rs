@@ -805,7 +805,7 @@ impl App {
     }
 
     /// The picture's left edge: its melt into the ground, and the blade along it.
-    fn art_edge(painter: &egui::Painter, poly: &[Pos2; 4], area: Rect, theme: &Theme, p: f32, glow: bool) {
+    fn art_edge(painter: &egui::Painter, poly: &[Pos2; 4], area: Rect, theme: &Theme, p: f32) {
         // The picture melts into the ground on its left and at its bottom.
         let s = area.height() * SLANT;
         let melt = if theme.light { 0.2 } else { 0.42 };
@@ -829,9 +829,6 @@ impl App {
             [points[0], points[1], pos2(lerp(points[1].x, points[2].x, reach), bottom), pos2(lerp(points[0].x, points[3].x, reach), bottom)]
         };
         fill(painter, &cut(edge(-34.0, 8.0)), theme.accent2);
-        if glow {
-            motion::glow(painter, &cut(edge(-22.0, 10.0)), alpha(theme.accent, 0.4), 16.0);
-        }
         fill(painter, &cut(edge(-22.0, 10.0)), theme.accent);
     }
 
@@ -885,13 +882,13 @@ impl App {
             // The melt and the blade swept with the rest: the old theme's ahead of the new ground.
             let (from, target) = (self.from_theme, self.theme(self.selected));
             for (strip, new) in &strips {
-                Self::art_edge(&painter.with_clip_rect(painter.clip_rect().intersect(*strip)), &poly, area, if *new { &target } else { &from }, 1.0, false);
+                Self::art_edge(&painter.with_clip_rect(painter.clip_rect().intersect(*strip)), &poly, area, if *new { &target } else { &from }, 1.0);
             }
             if target.transition == Transition::Slash {
                 fill(&painter.with_clip_rect(painter.clip_rect().intersect(area)), &slash_stripe(full, p, d), theme.accent2);
             }
         } else {
-            Self::art_edge(&painter, &poly, area, theme, p, true);
+            Self::art_edge(&painter, &poly, area, theme, p);
         }
 
         let project = self.catalog.projects[self.selected].clone();
