@@ -340,12 +340,14 @@ fn clip_to_rect(points: &[Pos2], rect: Rect) -> Vec<Pos2> {
 }
 
 /// The theme's motif, faint, over `rect`. `shift`: parallax during transitions.
-pub fn motif(painter: &Painter, rect: Rect, theme: &Theme, strength: f32, shift: f32) {
+pub fn motif(painter: &Painter, rect: Rect, theme: &Theme, strength: f32, shift: f32, stripes: bool) {
     let ink = alpha(theme.accent, 0.07 * strength);
     let faint = alpha(theme.accent, 0.035 * strength);
     // The motif drifts slowly with the clock (AMBIENT), its slanted stripes behind it.
     let clock = ambient_clock(painter);
-    drift(painter, rect, theme, strength, clock);
+    if stripes {
+        drift(painter, rect, theme, strength, clock);
+    }
     let spin = clock * 0.04;
     let shift = shift + clock * 10.0;
     match theme.motif {
@@ -407,42 +409,87 @@ pub fn motif(painter: &Painter, rect: Rect, theme: &Theme, strength: f32, shift:
     }
 }
 
-/// A CRT's look over a retro screen shown in `rect`: fine scanlines, darker corners, and a
-/// faint band of light rolling down (with the ambient motion).
+/// An old CRT's look over a retro screen shown in `rect`, alive with the ambient motion:
+/// scanlines creeping down, a hum bar and a bright band rolling, flicker, grain, darker
+/// rounded corners and a glare on the glass.
 pub fn crt(painter: &Painter, rect: Rect, opacity: f32) {
     if opacity <= 0.0 || rect.width() < 4.0 || rect.height() < 4.0 {
         return;
     }
     let painter = painter.with_clip_rect(painter.clip_rect().intersect(rect));
-    let line = alpha(Color32::BLACK, 0.26 * opacity);
-    let mut y = rect.min.y.floor() + 2.0;
+    let clock = ambient_clock(&painter);
+    let frame = (clock * 30.0) as u32;
+    let hash = |n: u32| {
+        let mut x = n.wrapping_mul(0x9e37_79b9) ^ 0x85eb_ca6b;
+        x ^= x >> 15;
+        x = x.wrapping_mul(0x2c1b_3c6d);
+        x ^= x >> 12;
+        (x & 0xffff) as f32 / 65535.0
+    };
+    // Scanlines, creeping down slowly.
+    let line = alpha(Color32::BLACK, 0.3 * opacity);
+    let mut y = rect.min.y.floor() + (clock * 4.0) % 3.0;
     while y < rect.max.y {
-        painter.rect_filled(Rect::from_min_size(pos2(rect.min.x, y), vec2(rect.width(), 1.0)), 0.0, line);
+        painter.rect_filled(Rect::from_min_size(pos2(rect.min.x, y), vec2(rect.width(), 1.2)), 0.0, line);
         y += 3.0;
     }
-    // Corners: the edges darken towards the outside.
-    let inner = rect.shrink2(vec2(rect.width() * 0.16, rect.height() * 0.2));
-    let dark = alpha(Color32::BLACK, 0.42 * opacity);
+    if AMBIENT > 0.0 {
+        // The hum bar: a wide dark band rolling up, and a thin bright one rolling down.
+        let hum = rect.height() * 0.35;
+        let y = rect.max.y + hum - (clock * 22.0) % (rect.height() + hum * 2.0);
+        let dim = alpha(Color32::BLACK, 0.16 * opacity);
+        gradient_rect(&painter, Rect::from_min_max(pos2(rect.min.x, y - hum), pos2(rect.max.x, y)), alpha(Color32::BLACK, 0.0), dim, true);
+        gradient_rect(&painter, Rect::from_min_max(pos2(rect.min.x, y), pos2(rect.max.x, y + hum)), dim, alpha(Color32::BLACK, 0.0), true);
+        let band = rect.height() * 0.08;
+        let y = rect.min.y - band + (clock * 70.0) % (rect.height() + band * 2.0);
+        gradient_rect(&painter, Rect::from_min_max(pos2(rect.min.x, y), pos2(rect.max.x, y + band)), alpha(Color32::WHITE, 0.0), alpha(Color32::WHITE, 0.07 * opacity), true);
+        painter.rect_filled(Rect::from_min_size(pos2(rect.min.x, y + band), vec2(rect.width(), 1.5)), 0.0, alpha(Color32::WHITE, 0.1 * opacity));
+        // Flicker: the whole screen a hair brighter or darker from one frame to the next.
+        let flicker = hash(frame) - 0.5;
+        let tone = if flicker > 0.0 { Color32::WHITE } else { Color32::BLACK };
+        painter.rect_filled(rect, 0.0, alpha(tone, flicker.abs() * 0.07 * opacity));
+        // Grain: specks of light, new every frame.
+        let specks = ((rect.width() * rect.height()) / 2600.0) as u32;
+        for k in 0..specks.min(500) {
+            let (x, y) = (hash(frame * 1013 + k * 2), hash(frame * 1013 + k * 2 + 1));
+            let at = pos2(rect.min.x + x * rect.width(), rect.min.y + y * rect.height());
+            painter.rect_filled(Rect::from_min_size(at, vec2(2.0, 1.0)), 0.0, alpha(Color32::WHITE, (0.05 + 0.1 * hash(k + frame)) * opacity));
+        }
+    }
+    // Corners: the edges darken towards the outside, rounder than the picture.
     let clear = Color32::from_rgba_premultiplied(0, 0, 0, 0);
+    let dark = alpha(Color32::BLACK, 0.6 * opacity);
+    let c = rect.center();
+    let (rx, ry) = (rect.width() * 0.5, rect.height() * 0.5);
     let mut mesh = egui::Mesh::default();
-    for p in [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()] {
-        mesh.colored_vertex(p, dark);
+    let steps = 48u32;
+    for k in 0..steps {
+        let a = k as f32 * TAU / steps as f32;
+        let (cx, cy) = (a.cos(), a.sin());
+        // a superellipse: square-ish screen, rounded corners
+        let r = 1.0 / (cx.abs().powf(6.0) + cy.abs().powf(6.0)).powf(1.0 / 6.0);
+        let outer_scale = 1.0 / cx.abs().max(cy.abs()).max(1e-3);
+        mesh.colored_vertex(c + vec2(cx * rx * r * 0.82, cy * ry * r * 0.78), clear);
+        mesh.colored_vertex(c + vec2(cx * rx * r, cy * ry * r), alpha(Color32::BLACK, 0.3 * opacity));
+        mesh.colored_vertex(c + vec2(cx * rx * outer_scale * 1.01, cy * ry * outer_scale * 1.01), dark);
     }
-    for p in [inner.left_top(), inner.right_top(), inner.right_bottom(), inner.left_bottom()] {
-        mesh.colored_vertex(p, clear);
-    }
-    for i in 0..4u32 {
-        let j = (i + 1) % 4;
-        mesh.add_triangle(i, j, 4 + j);
-        mesh.add_triangle(i, 4 + j, 4 + i);
+    for k in 0..steps {
+        let j = (k + 1) % steps;
+        let (a, b) = (3 * k, 3 * j);
+        mesh.add_triangle(a, a + 1, b + 1);
+        mesh.add_triangle(a, b + 1, b);
+        mesh.add_triangle(a + 1, a + 2, b + 2);
+        mesh.add_triangle(a + 1, b + 2, b + 1);
     }
     painter.add(Shape::mesh(mesh));
-    let clock = ambient_clock(&painter);
-    if AMBIENT > 0.0 {
-        let band = rect.height() * 0.18;
-        let y = rect.min.y - band + (clock * 38.0) % (rect.height() + band * 2.0);
-        gradient_rect(&painter, Rect::from_min_max(pos2(rect.min.x, y), pos2(rect.max.x, y + band)), alpha(Color32::WHITE, 0.0), alpha(Color32::WHITE, 0.035 * opacity), true);
-    }
+    // Glare on the glass, top left.
+    let glare = [pos2(rect.min.x, rect.min.y), pos2(rect.min.x + rect.width() * 0.55, rect.min.y), pos2(rect.min.x, rect.min.y + rect.height() * 0.5)];
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(glare[0], alpha(Color32::WHITE, 0.07 * opacity));
+    mesh.colored_vertex(glare[1], clear);
+    mesh.colored_vertex(glare[2], clear);
+    mesh.add_triangle(0, 1, 2);
+    painter.add(Shape::mesh(mesh));
 }
 
 /// The ambient motion (drifting motifs, passing shines): 0 stills them all.

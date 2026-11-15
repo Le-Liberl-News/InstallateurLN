@@ -1,13 +1,14 @@
 //! What the installer shows: the site's public catalogue and articles
-//! (/api/launcher.php, else the copy in the executable), each project joined
-//! to its sheet (projects.json: description, credits) and, when the installer
-//! can patch it, to its game (games::GAMES).
+//! (/api/launcher.php, else the copy in the executable), each project with its
+//! sheet (description, credits: the site's project page) and, when the installer
+//! can patch it, its game (games::GAMES).
 
 use crate::games::{self, GAMES, Game, Sheet};
 use serde_json::Value;
 
 pub const SITE: &str = "https://leliberlnews.fr";
 pub const LAUNCHER_URL: &str = "https://leliberlnews.fr/api/launcher.php";
+pub const DOWNLOADS_URL: &str = "https://leliberlnews.fr/api/downloads.php";
 pub const DISCORD: &str = "https://discord.gg/3jSCpGJDSd";
 pub const X: &str = "https://x.com/SoraNoKisekiFR";
 pub const HELP: &str = "https://leliberlnews.fr/tutos/help.html";
@@ -49,6 +50,8 @@ pub struct Project {
     /// The game the installer patches; None: the site has the download.
     pub game: Option<&'static Game>,
     pub sheet: Sheet,
+    /// How many times its patch was installed from the installers (the site's counter).
+    pub downloads: Option<u64>,
     /// Words that tie an article to the project.
     pub keywords: Vec<String>,
 }
@@ -125,7 +128,7 @@ impl Article {
     }
 }
 
-/// Per catalogue id: the sheet's name in projects.json, the Steam id, words for articles.
+/// Per catalogue id: its name, the Steam id, words for articles.
 const KNOWN: &[(&str, &str, u32, &[&str])] = &[
     ("sky-fc", "Trails in the Sky FC", 251150, &["sky fc", "trails in the sky fc", " fc"]),
     ("sky-sc", "Trails in the Sky SC", 251290, &["sky sc", " sc "]),
@@ -154,15 +157,14 @@ fn text(value: &Value, key: &str) -> String {
     value.get(key).and_then(Value::as_str).unwrap_or_default().trim().to_string()
 }
 
-/// The catalogue from the launcher JSON and the sheets of projects.json.
-pub fn build(launcher: &Value, sheets_json: &Value) -> Catalog {
-    let sheets = games::sheets(sheets_json);
+/// The catalogue from the launcher JSON.
+pub fn build(launcher: &Value) -> Catalog {
     let mut projects: Vec<Project> = launcher
         .get("projects")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .map(|item| project(&text(item, "id"), item, &sheets))
+        .map(|item| project(&text(item, "id"), item))
         .collect();
     // The 3rd has no public page yet but the installer patches it: after SC.
     if !projects.iter().any(|project| project.id == "sky-3rd") {
@@ -172,7 +174,7 @@ pub fn build(launcher: &Value, sheets_json: &Value) -> Catalog {
             "page": format!("{SITE}/projects.php"),
         });
         let at = projects.iter().position(|project| project.id == "sky-sc").map(|index| index + 1).unwrap_or(projects.len());
-        projects.insert(at, project("sky-3rd", &third, &sheets));
+        projects.insert(at, project("sky-3rd", &third));
     }
     let articles = launcher
         .get("articles")
@@ -191,7 +193,7 @@ pub fn build(launcher: &Value, sheets_json: &Value) -> Catalog {
     Catalog { projects, articles }
 }
 
-fn project(id: &str, item: &Value, sheets: &[(String, Sheet)]) -> Project {
+fn project(id: &str, item: &Value) -> Project {
     let known = KNOWN.iter().find(|(key, ..)| *key == id);
     let title = text(item, "title").trim_start_matches("The Legend of Heroes:").trim().to_string();
     let platform = text(item, "platform");
@@ -202,10 +204,7 @@ fn project(id: &str, item: &Value, sheets: &[(String, Sheet)]) -> Project {
     } else {
         Series::Other
     };
-    let sheet = known
-        .and_then(|(_, name, ..)| sheets.iter().find(|(sheet_name, _)| sheet_name == name))
-        .map(|(_, sheet)| sheet.clone())
-        .unwrap_or_default();
+    let sheet = games::sheet(item);
     let mut keywords: Vec<String> = known.map(|(.., words)| words.iter().map(|word| word.to_string()).collect()).unwrap_or_default();
     keywords.push(fold(&title));
     Project {
@@ -229,6 +228,7 @@ fn project(id: &str, item: &Value, sheets: &[(String, Sheet)]) -> Project {
         steam_id: known.map(|(_, _, steam, _)| *steam).filter(|steam| *steam != 0),
         game: GAMES.iter().find(|game| game.project == id),
         sheet,
+        downloads: item.get("downloads").and_then(Value::as_u64),
         keywords,
     }
 }
@@ -244,11 +244,10 @@ pub fn article_about<'a>(articles: &'a [Article], project: &Project) -> Option<&
 /// The catalogue bundled in the executable (shown at once, replaced by the site's).
 pub fn bundled() -> Catalog {
     let launcher: Value = serde_json::from_str(include_str!("../assets/launcher.json")).unwrap_or_default();
-    let sheets: Value = serde_json::from_str(include_str!("../assets/projects.json")).unwrap_or_default();
-    build(&launcher, &sheets)
+    build(&launcher)
 }
 
-/// The site's catalogue (both requests in this thread); None when the site cannot be reached.
+/// The site's catalogue (requested in this thread); None when the site cannot be reached.
 pub fn fetch() -> Option<Catalog> {
     let get = |url: &str| -> Option<Value> {
         let text = ureq::get(url).header("User-Agent", "InstallateurLiberlNews").call().ok()?.into_body().read_to_string().ok()?;
@@ -256,6 +255,26 @@ pub fn fetch() -> Option<Catalog> {
     };
     // LN_LAUNCHER_URL: a local site, to try a catalogue before it is online.
     let launcher = get(&std::env::var("LN_LAUNCHER_URL").unwrap_or_else(|_| LAUNCHER_URL.to_string()))?;
-    let sheets = get(games::PROJECTS_URL).unwrap_or_else(|| serde_json::from_str(include_str!("../assets/projects.json")).unwrap_or_default());
-    Some(build(&launcher, &sheets))
+    Some(build(&launcher))
+}
+
+/// Tells the site a project's patch was installed (its download counter), in the background.
+pub fn count_download(id: &str) {
+    let id = id.to_string();
+    std::thread::spawn(move || {
+        let _ = ureq::post(DOWNLOADS_URL).header("User-Agent", "InstallateurLiberlNews").send_form([("id", id.as_str())]);
+    });
+}
+
+/// A count with its thousands apart: "2 347".
+pub fn grouped(count: u64) -> String {
+    let digits = count.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            out.push('\u{202f}');
+        }
+        out.push(digit);
+    }
+    out
 }

@@ -145,6 +145,8 @@ pub struct App {
     pub previous: usize,
     pub direction: f32,
     pub changed: f64,
+    /// When the home's title last began rising (a project chosen, or back from its page).
+    pub title_from: f64,
     pub scroll: f32,
     pub from_theme: Theme,
     pub query: String,
@@ -266,6 +268,7 @@ impl App {
             previous: 0,
             direction: 1.0,
             changed: -10.0,
+            title_from: -10.0,
             scroll: 0.0,
             from_theme,
             query: String::new(),
@@ -448,6 +451,8 @@ impl App {
         self.mode = to;
         let (poly, placed) = crate::page::hero_geometry(self, page.project);
         self.flight = Some(Flight { from: poly, from_placed: placed, started: self.now, closing: true, project: page.project });
+        // Back on the home, its title rises letter by letter, as when one browses it.
+        self.title_from = self.now + 0.15;
         if to == Mode::Library {
             self.grid_changed = self.now;
         }
@@ -500,12 +505,9 @@ impl App {
         self.job = Some(Job { project, shared, kind });
     }
 
-    /// How a retro game's floppies are translated: PatchRetro's recipe, else projects.json's.
+    /// How a retro game's floppies are translated: PatchRetro's recipe (served by the platform).
     pub fn recipe(&self, project: &Project) -> Option<crate::retro::Recipe> {
-        self.retro
-            .get(&project.id)
-            .and_then(|slot| slot.lock().unwrap().clone())
-            .or_else(|| project.sheet.install.as_ref().and_then(crate::retro::Recipe::read))
+        self.retro.get(&project.id).and_then(|slot| slot.lock().unwrap().clone())
     }
 
     pub fn voice_release(&self, project: &Project) -> Option<Result<Option<crate::voices::VoiceRelease>, String>> {
@@ -543,6 +545,13 @@ impl App {
                 Ok(text) => (true, text),
                 Err(text) => (false, text),
             };
+            // A patch put on a game counts as one download on the site (api/downloads.php).
+            if ok && matches!(kind, JobKind::Install | JobKind::Floppies) {
+                if let Some(project) = self.catalog.projects.iter_mut().find(|project| project.id == id) {
+                    project.downloads = project.downloads.map(|count| count + 1);
+                }
+                crate::catalog::count_download(&id);
+            }
             self.outcomes.insert(id, Outcome { ok, text, at: self.now, kind });
         }
     }
@@ -666,16 +675,18 @@ impl App {
             Some(page) => self.theme(page.project),
             None => self.theme(self.selected),
         };
+        // The game pages keep their ground still (no drifting stripes).
+        let stripes = self.page.is_none();
         let p = self.progress(self.changed, THEME_TIME);
         let e = ease_in_out(p);
         if p >= 1.0 {
             painter.rect_filled(screen, 0.0, target.bg);
-            motion::motif(painter, screen, &target, 1.0, 0.0);
+            motion::motif(painter, screen, &target, 1.0, 0.0, stripes);
             return;
         }
         let from = self.from_theme;
         painter.rect_filled(screen, 0.0, from.bg);
-        motion::motif(painter, screen, &from, 1.0 - e, -self.direction * e * 50.0);
+        motion::motif(painter, screen, &from, 1.0 - e, -self.direction * e * 50.0, stripes);
         let (w, h) = (screen.width(), screen.height());
         let s = h * SLANT;
         let d = self.direction;
@@ -712,7 +723,7 @@ impl App {
                 }
             }
         }
-        motion::motif(painter, screen, &target, e, d * (1.0 - e) * 60.0);
+        motion::motif(painter, screen, &target, e, d * (1.0 - e) * 60.0, stripes);
     }
 
     /// The picture's left edge: its melt into the ground, and the blade along it.
@@ -742,7 +753,6 @@ impl App {
         fill(painter, &cut(edge(-34.0, 8.0)), theme.accent2);
         motion::glow(painter, &cut(edge(-22.0, 10.0)), alpha(theme.accent, 0.4), 16.0);
         fill(painter, &cut(edge(-22.0, 10.0)), theme.accent);
-        motion::shine(painter, &cut(edge(-22.0, 10.0)), 7.0, 2.3, 1.6);
     }
 
     /// Where the home's picture goes: the right of the window, its left edge slanted.
@@ -814,7 +824,7 @@ impl App {
         let project = self.catalog.projects[self.selected].clone();
         let left = screen.min.x + 56.0;
         let column = (area.min.x - left - 20.0).max(300.0);
-        let t = self.since(self.changed, 1.6) - 0.1;
+        let t = self.since(self.changed.max(self.title_from), 1.6) - 0.1;
 
         // Kicker: an inverted label on a slanted bar that unrolls.
         let kicker = format!("{}  ·  {}  ·  {}", project.series.label().to_uppercase(), project.year, project.platform.to_uppercase());
@@ -825,7 +835,6 @@ impl App {
         let bar = Rect::from_min_size(pos2(left - 10.0, top), vec2(kicker_width * unroll, 26.0));
         fill(&painter, &slanted(bar.translate(vec2(5.0, 5.0)), SLANT), alpha(theme.accent2, 0.9));
         fill(&painter, &slanted(bar, SLANT), theme.accent);
-        motion::shine(&painter, &slanted(bar, SLANT), 6.0, 0.0, unroll);
         let clip = painter.with_clip_rect(bar);
         spaced(&clip, pos2(left + 4.0, top + 13.0), &kicker, &kicker_font, theme.bg, 2.2);
         // The series opens the library on its shelf.

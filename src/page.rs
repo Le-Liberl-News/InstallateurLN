@@ -151,7 +151,7 @@ fn hero(app: &mut App, context: &egui::Context, screen: Rect, project: &Project,
         let painter = ui.painter().with_clip_rect(screen);
         // Opaque: the content passes under it.
         fill(&painter, &[rect.min, pos2(rect.max.x, rect.min.y), pos2(rect.max.x, rect.max.y), pos2(rect.min.x, rect.max.y)], theme.bg);
-        motion::motif(&painter, Rect::from_min_size(rect.min, vec2(rect.width(), height + TABS)), theme, 1.0, 0.0);
+        motion::motif(&painter, Rect::from_min_size(rect.min, vec2(rect.width(), height + TABS)), theme, 1.0, 0.0, false);
         let edge_a = pos2(rect.min.x, rect.min.y + height);
         // The edge rises to the right, but never into the title: it passes under the last
         // line's end (its baseline, plus its shadow and a margin) at any width.
@@ -197,7 +197,6 @@ fn hero(app: &mut App, context: &egui::Context, screen: Rect, project: &Project,
         fill(&painter, &[edge_a + vec2(0.0, 2.0), tip + vec2(0.0, 2.0), tip + vec2(0.0, 9.0), edge_a + vec2(0.0, 9.0)], theme.accent2);
         motion::glow(&painter, &[edge_a - vec2(0.0, 3.0), tip - vec2(0.0, 3.0), tip + vec2(0.0, 3.0), edge_a + vec2(0.0, 3.0)], alpha(theme.accent, 0.35 * reach), 14.0);
         fill(&painter, &[edge_a - vec2(0.0, 3.0), tip - vec2(0.0, 3.0), tip + vec2(0.0, 3.0), edge_a + vec2(0.0, 3.0)], theme.accent);
-        motion::shine(&painter, &[edge_a - vec2(0.0, 3.0), tip - vec2(0.0, 3.0), tip + vec2(0.0, 3.0), edge_a + vec2(0.0, 3.0)], 6.5, 1.2, 1.8 * reach);
         if let Some((.., started)) = flight {
             if app.progress(started, OPEN_TIME) >= 1.0 {
                 app.flight = None;
@@ -378,6 +377,9 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
         ui.label(RichText::new(if project.status_label.is_empty() { "—".to_string() } else { project.status_label.to_uppercase() }).font(motion::display(40.0)).color(theme.accent));
         ui.add_space(4.0);
         ui.label(RichText::new(format!("{} · {}", project.platform, project.year)).color(theme.muted));
+        if let Some(count) = project.downloads.filter(|count| *count > 0) {
+            ui.label(RichText::new(format!("{} téléchargement{}", crate::catalog::grouped(count), if count > 1 { "s" } else { "" })).color(theme.muted));
+        }
         ui.add_space(18.0);
         let painter = ui.painter().clone();
         let recipe = app.recipe(project).filter(crate::retro::Recipe::local);
@@ -520,6 +522,11 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
         ui.label(RichText::new("Compatible").color(theme.muted));
         ui.label(if game.gog_id != 0 { "PC · Steam, GOG" } else { "PC · Steam" });
         ui.end_row();
+        if let Some(count) = project.downloads.filter(|count| *count > 0) {
+            ui.label(RichText::new("Téléchargements").color(theme.muted));
+            ui.label(crate::catalog::grouped(count));
+            ui.end_row();
+        }
         if let Some(Ok(Some(release))) = &release {
             ui.label(RichText::new("Taille").color(theme.muted));
             ui.label(format!("{:.0} Mo", release.size as f64 / 1_048_576.0));

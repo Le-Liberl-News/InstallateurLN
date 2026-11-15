@@ -1,5 +1,5 @@
-//! Translating a retro game's floppies (.d88/.t88), from the "install" recipe
-//! of projects.json, as the previous installer did:
+//! Translating a retro game's floppies (.d88/.t88), from PatchRetro's recipe
+//! (recette.json, served by the platform), as the previous installer did:
 //!
 //! - "xdelta": the archive holds one delta per known dump; the player's floppy
 //!   is recognised by its SHA-1 and the matching delta applied (Asteka has 7
