@@ -769,6 +769,7 @@ impl App {
         fill(&painter, &cut(edge(-34.0, 8.0)), theme.accent2);
         motion::glow(&painter, &cut(edge(-22.0, 10.0)), alpha(theme.accent, 0.4), 16.0);
         fill(&painter, &cut(edge(-22.0, 10.0)), theme.accent);
+        motion::shine(&painter, &cut(edge(-22.0, 10.0)), 7.0, 2.3, 1.6);
 
         let project = self.catalog.projects[self.selected].clone();
         let left = screen.min.x + 56.0;
@@ -784,6 +785,7 @@ impl App {
         let bar = Rect::from_min_size(pos2(left - 10.0, top), vec2(kicker_width * unroll, 26.0));
         fill(&painter, &slanted(bar.translate(vec2(5.0, 5.0)), SLANT), alpha(theme.accent2, 0.9));
         fill(&painter, &slanted(bar, SLANT), theme.accent);
+        motion::shine(&painter, &slanted(bar, SLANT), 6.0, 0.0, unroll);
         let clip = painter.with_clip_rect(bar);
         spaced(&clip, pos2(left + 4.0, top + 13.0), &kicker, &kicker_font, theme.bg, 2.2);
         // The series opens the library on its shelf.
@@ -1669,6 +1671,9 @@ pub fn slant_button(ui: &mut egui::Ui, painter: &egui::Painter, id: Id, at: Pos2
     }
     fill(painter, &shape.map(|p| p + vec2(7.0, 7.0) - sink), fade(if enabled { theme.accent2 } else { alpha(theme.muted, 0.2) }));
     fill(painter, &shape, fade(if enabled { mix(theme.accent, Color32::WHITE, 0.12 * hover) } else { alpha(theme.muted, 0.35) }));
+    if enabled {
+        motion::shine(painter, &shape, 5.0, 3.6, appear * (1.0 - hover));
+    }
     if hover > 0.0 {
         // The blade crosses once each time the mouse arrives.
         let since = ui.ctx().memory_mut(|memory| {

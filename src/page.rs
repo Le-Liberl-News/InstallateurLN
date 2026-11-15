@@ -194,6 +194,7 @@ fn hero(app: &mut App, context: &egui::Context, screen: Rect, project: &Project,
         fill(&painter, &[edge_a + vec2(0.0, 2.0), tip + vec2(0.0, 2.0), tip + vec2(0.0, 9.0), edge_a + vec2(0.0, 9.0)], theme.accent2);
         motion::glow(&painter, &[edge_a - vec2(0.0, 3.0), tip - vec2(0.0, 3.0), tip + vec2(0.0, 3.0), edge_a + vec2(0.0, 3.0)], alpha(theme.accent, 0.35 * reach), 14.0);
         fill(&painter, &[edge_a - vec2(0.0, 3.0), tip - vec2(0.0, 3.0), tip + vec2(0.0, 3.0), edge_a + vec2(0.0, 3.0)], theme.accent);
+        motion::shine(&painter, &[edge_a - vec2(0.0, 3.0), tip - vec2(0.0, 3.0), tip + vec2(0.0, 3.0), edge_a + vec2(0.0, 3.0)], 6.5, 1.2, 1.8 * reach);
         if let Some((.., started)) = flight {
             if app.progress(started, OPEN_TIME) >= 1.0 {
                 app.flight = None;

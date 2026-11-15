@@ -322,24 +322,29 @@ fn clip_to_rect(points: &[Pos2], rect: Rect) -> Vec<Pos2> {
 pub fn motif(painter: &Painter, rect: Rect, theme: &Theme, strength: f32, shift: f32) {
     let ink = alpha(theme.accent, 0.07 * strength);
     let faint = alpha(theme.accent, 0.035 * strength);
+    // The motif drifts slowly with the clock (AMBIENT), its slanted stripes behind it.
+    let clock = ambient_clock(painter);
+    drift(painter, rect, theme, strength, clock);
+    let spin = clock * 0.04;
+    let shift = shift + clock * 10.0;
     match theme.motif {
         Motif::Orbits => {
             // The orbment's rings, off to the right, and its seven slots.
-            let center = pos2(rect.max.x - rect.width() * 0.18 + shift, rect.min.y + rect.height() * 0.42);
+            let center = pos2(rect.max.x - rect.width() * 0.18 + (shift - clock * 10.0), rect.min.y + rect.height() * 0.42);
             for (index, radius) in [0.22, 0.34, 0.47, 0.62].iter().enumerate() {
                 let r = rect.height() * radius;
                 painter.circle_stroke(center, r, Stroke::new(if index == 1 { 2.0 } else { 1.0 }, if index % 2 == 0 { ink } else { faint }));
             }
             let r = rect.height() * 0.34;
             for slot in 0..7 {
-                let a = slot as f32 * TAU / 7.0 - TAU / 4.0 + shift * 0.002;
+                let a = slot as f32 * TAU / 7.0 - TAU / 4.0 + spin;
                 painter.circle_filled(center + vec2(a.cos(), a.sin()) * r, 5.0, ink);
             }
         }
         Motif::Rays => {
-            let origin = pos2(rect.max.x + 80.0 + shift, rect.min.y - 60.0);
+            let origin = pos2(rect.max.x + 80.0 + (shift - clock * 10.0), rect.min.y - 60.0);
             for ray in 0..14 {
-                let a = TAU * 0.25 + ray as f32 * 0.075;
+                let a = TAU * 0.25 + ray as f32 * 0.075 + (spin * 2.0).sin() * 0.03;
                 let end = origin + vec2(a.cos(), a.sin()) * rect.width() * 1.6;
                 painter.line_segment([origin, end], Stroke::new(if ray % 3 == 0 { 2.0 } else { 1.0 }, if ray % 2 == 0 { ink } else { faint }));
             }
@@ -373,7 +378,7 @@ pub fn motif(painter: &Painter, rect: Rect, theme: &Theme, strength: f32, shift:
             let mut y = rect.min.y + step;
             let mut row = 0;
             while y < rect.max.y {
-                let mut x = rect.min.x + rect.width() * 0.45 + if row % 2 == 0 { 0.0 } else { step / 2.0 } + shift;
+                let mut x = rect.min.x + rect.width() * 0.45 + if row % 2 == 0 { 0.0 } else { step / 2.0 } + (shift % step);
                 while x < rect.max.x + step {
                     let t = clamp01((x - rect.min.x - rect.width() * 0.45) / (rect.width() * 0.55));
                     painter.circle_filled(pos2(x, y), 0.6 + 3.2 * t, ink);
@@ -382,6 +387,86 @@ pub fn motif(painter: &Painter, rect: Rect, theme: &Theme, strength: f32, shift:
                 y += step;
                 row += 1;
             }
+        }
+    }
+}
+
+/// The ambient motion (drifting motifs, passing shines): 0 stills them all.
+pub const AMBIENT: f32 = 1.0;
+
+/// Seconds for the ambient motion, asking for the next frame (about 30 a second) while it runs.
+fn ambient_clock(painter: &Painter) -> f32 {
+    if AMBIENT <= 0.0 {
+        return 0.0;
+    }
+    painter.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    painter.ctx().input(|input| input.time) as f32 * AMBIENT
+}
+
+/// Thin slanted stripes across the ground, very faint, sliding slowly to the right.
+fn drift(painter: &Painter, rect: Rect, theme: &Theme, strength: f32, clock: f32) {
+    if AMBIENT <= 0.0 {
+        return;
+    }
+    let colour = alpha(theme.accent, 0.022 * strength);
+    let step = 34.0;
+    let height = rect.height();
+    let s = height * SLANT * 2.0;
+    let mut x = rect.min.x - s - step + (clock * 14.0) % step;
+    while x < rect.max.x + step {
+        painter.add(Shape::convex_polygon(vec![pos2(x + s, rect.min.y), pos2(x + s + 7.0, rect.min.y), pos2(x + 7.0, rect.max.y), pos2(x, rect.max.y)], colour, Stroke::NONE));
+        x += step;
+    }
+}
+
+/// A convex polygon cut by another convex polygon (Sutherland–Hodgman).
+fn clip_convex(subject: &[Pos2], clip: &[Pos2]) -> Vec<Pos2> {
+    let area: f32 = (0..clip.len()).map(|i| {
+        let (a, b) = (clip[i], clip[(i + 1) % clip.len()]);
+        a.x * b.y - b.x * a.y
+    }).sum();
+    let sign = if area > 0.0 { 1.0 } else { -1.0 };
+    let mut polygon = subject.to_vec();
+    for i in 0..clip.len() {
+        if polygon.is_empty() {
+            break;
+        }
+        let (e0, e1) = (clip[i], clip[(i + 1) % clip.len()]);
+        let inside = |p: Pos2| sign * ((e1.x - e0.x) * (p.y - e0.y) - (e1.y - e0.y) * (p.x - e0.x));
+        let input = std::mem::take(&mut polygon);
+        for j in 0..input.len() {
+            let (a, b) = (input[j], input[(j + 1) % input.len()]);
+            let (da, db) = (inside(a), inside(b));
+            if da >= 0.0 {
+                polygon.push(a);
+            }
+            if (da >= 0.0) != (db >= 0.0) {
+                polygon.push(a + (b - a) * (da / (da - db)));
+            }
+        }
+    }
+    polygon
+}
+
+/// A shine running across a coloured shape now and then: a soft slanted band of light, once
+/// every `period` seconds, `phase` setting when (so shapes do not all shine together).
+pub fn shine(painter: &Painter, shape: &[Pos2], period: f32, phase: f32, strength: f32) {
+    if AMBIENT <= 0.0 || strength <= 0.0 || shape.len() < 3 {
+        return;
+    }
+    let clock = ambient_clock(painter);
+    let t = ((clock + phase) % period) / 0.9;
+    if t >= 1.0 {
+        return;
+    }
+    let bounds = Rect::from_points(shape);
+    let lean = bounds.height() * 0.6;
+    let centre = lerp(bounds.min.x - 50.0 - lean, bounds.max.x + 50.0, ease_in_out(t));
+    for (half, light) in [(26.0, 0.05), (16.0, 0.07), (9.0, 0.09), (3.5, 0.12)] {
+        let band = [pos2(centre - half + lean, bounds.min.y), pos2(centre + half + lean, bounds.min.y), pos2(centre + half, bounds.max.y), pos2(centre - half, bounds.max.y)];
+        let cut = clip_convex(&band, shape);
+        if cut.len() >= 3 {
+            painter.add(Shape::convex_polygon(cut, alpha(Color32::WHITE, light * strength), Stroke::NONE));
         }
     }
 }
