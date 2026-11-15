@@ -1262,7 +1262,7 @@ fn reviews(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
         let ready = page.rating > 0 && (2..=40).contains(&author) && (10..=2000).contains(&words);
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let label = if sending { "ENVOI…" } else { "ENVOYER POUR MODÉRATION" };
+            let label = if sending { "ENVOI…" } else { "ENVOYER" };
             let (rect, response) = ui.allocate_exact_size(vec2(motion::width(ui.painter(), label, &motion::semibold(13.0)) + 34.0, 32.0), Sense::click());
             let on = ready && !sending;
             let hover = ui.ctx().animate_bool_with_time(response.id, on && response.hovered(), 0.12);
