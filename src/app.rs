@@ -735,25 +735,40 @@ fn span(points: &[Pos2; 4], y: f32) -> Option<(f32, f32)> {
 /// The window cut into thin rows over `rows`, each row split between the new ground (true)
 /// and the old one (false), following `regions`.
 fn sweep_strips(regions: &[[Pos2; 4]], window: Rect, rows: Rect) -> Vec<(Rect, bool)> {
-    let mut strips = Vec::new();
-    let step = 3.0;
+    // Rows of 4 points; a row split like the one above it (the scan's bars) extends it instead,
+    // so the picture is drawn as few times as the sweep's shape allows.
+    let mut strips: Vec<(Rect, bool)> = Vec::new();
+    let mut previous: Vec<(f32, f32, bool)> = Vec::new();
+    let mut previous_from = 0;
+    let step = 4.0;
     let mut y = rows.min.y.floor();
     while y < rows.max.y {
         let mut covered: Vec<(f32, f32)> = regions.iter().filter_map(|region| span(region, y + step / 2.0)).map(|(a, b)| (a.max(window.min.x), b.min(window.max.x))).filter(|(a, b)| b > a).collect();
         covered.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut row: Vec<(f32, f32, bool)> = Vec::new();
         let mut x = window.min.x;
         for (a, b) in covered {
             if a > x {
-                strips.push((Rect::from_min_max(pos2(x, y), pos2(a, y + step)), false));
+                row.push((x, a, false));
             }
             let start = a.max(x);
             if b > start {
-                strips.push((Rect::from_min_max(pos2(start, y), pos2(b, y + step)), true));
+                row.push((start, b, true));
             }
             x = x.max(b);
         }
         if x < window.max.x {
-            strips.push((Rect::from_min_max(pos2(x, y), pos2(window.max.x, y + step)), false));
+            row.push((x, window.max.x, false));
+        }
+        let same = row.len() == previous.len() && row.iter().zip(&previous).all(|(a, b)| a.2 == b.2 && (a.0 - b.0).abs() < 0.5 && (a.1 - b.1).abs() < 0.5);
+        if same {
+            for strip in &mut strips[previous_from..] {
+                strip.0.max.y = y + step;
+            }
+        } else {
+            previous_from = strips.len();
+            strips.extend(row.iter().map(|(a, b, new)| (Rect::from_min_max(pos2(*a, y), pos2(*b, y + step)), *new)));
+            previous = row;
         }
         y += step;
     }
@@ -790,7 +805,7 @@ impl App {
     }
 
     /// The picture's left edge: its melt into the ground, and the blade along it.
-    fn art_edge(painter: &egui::Painter, poly: &[Pos2; 4], area: Rect, theme: &Theme, p: f32) {
+    fn art_edge(painter: &egui::Painter, poly: &[Pos2; 4], area: Rect, theme: &Theme, p: f32, glow: bool) {
         // The picture melts into the ground on its left and at its bottom.
         let s = area.height() * SLANT;
         let melt = if theme.light { 0.2 } else { 0.42 };
@@ -814,7 +829,9 @@ impl App {
             [points[0], points[1], pos2(lerp(points[1].x, points[2].x, reach), bottom), pos2(lerp(points[0].x, points[3].x, reach), bottom)]
         };
         fill(painter, &cut(edge(-34.0, 8.0)), theme.accent2);
-        motion::glow(painter, &cut(edge(-22.0, 10.0)), alpha(theme.accent, 0.4), 16.0);
+        if glow {
+            motion::glow(painter, &cut(edge(-22.0, 10.0)), alpha(theme.accent, 0.4), 16.0);
+        }
         fill(painter, &cut(edge(-22.0, 10.0)), theme.accent);
     }
 
@@ -868,13 +885,13 @@ impl App {
             // The melt and the blade swept with the rest: the old theme's ahead of the new ground.
             let (from, target) = (self.from_theme, self.theme(self.selected));
             for (strip, new) in &strips {
-                Self::art_edge(&painter.with_clip_rect(painter.clip_rect().intersect(*strip)), &poly, area, if *new { &target } else { &from }, 1.0);
+                Self::art_edge(&painter.with_clip_rect(painter.clip_rect().intersect(*strip)), &poly, area, if *new { &target } else { &from }, 1.0, false);
             }
             if target.transition == Transition::Slash {
                 fill(&painter.with_clip_rect(painter.clip_rect().intersect(area)), &slash_stripe(full, p, d), theme.accent2);
             }
         } else {
-            Self::art_edge(&painter, &poly, area, theme, p);
+            Self::art_edge(&painter, &poly, area, theme, p, true);
         }
 
         let project = self.catalog.projects[self.selected].clone();
@@ -1177,9 +1194,6 @@ impl App {
                 let visible = placed.intersect(bounds);
                 let fade = (visible.width().min(visible.height()) * 0.05).clamp(2.0, 16.0);
                 motion::image_soft(painter, texture, placed, visible, fade, tint);
-                if pixel {
-                    motion::crt(painter, visible, opacity * arrived);
-                }
                 return Some(placed);
             }
         }

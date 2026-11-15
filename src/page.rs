@@ -182,9 +182,6 @@ fn hero(app: &mut App, context: &egui::Context, screen: Rect, project: &Project,
             let pixel = app.themes.of(&project.id).pixel;
             if let Some((texture, _, _)) = app.images.get(context, &url, pixel) {
                 motion::image_in(&painter, texture.id(), placed, &shape, Color32::WHITE);
-                if pixel {
-                    motion::crt(&painter, Rect::from_points(&shape).intersect(placed), 1.0);
-                }
             }
         }
         let landed = ease_out(clamp01((t - 0.2) / 0.5));
