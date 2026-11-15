@@ -668,6 +668,98 @@ fn scan_bars(screen: Rect, p: f32) -> Vec<Rect> {
         .collect()
 }
 
+/// Where the new theme's ground is at `p` (window coordinates): the slash's region, the
+/// shutter's blades, the scan's bars. The ground, the picture and its edge all follow them, so
+/// a change of project is one sweep across the whole window.
+fn wipe_regions(screen: Rect, transition: Transition, p: f32, d: f32) -> Vec<[Pos2; 4]> {
+    let (w, h) = (screen.width(), screen.height());
+    let s = h * SLANT;
+    let at = |points: [Pos2; 4]| points.map(|point| point + screen.min.to_vec2());
+    match transition {
+        Transition::Slash => {
+            let edge = slash_edge(screen, p, d);
+            vec![at(if d > 0.0 {
+                [pos2(edge + s, 0.0), pos2(w + s + 40.0, 0.0), pos2(w + s + 40.0, h), pos2(edge, h)]
+            } else {
+                [pos2(-s - 40.0, 0.0), pos2(edge + s, 0.0), pos2(edge, h), pos2(-s - 40.0, h)]
+            })]
+        }
+        Transition::Shutter => {
+            let blades = 5;
+            let width = (w + s) / blades as f32;
+            (0..blades)
+                .map(|k| {
+                    let order = if d > 0.0 { blades - 1 - k } else { k };
+                    let local = ease_out(clamp01((p - order as f32 * 0.09) / 0.55));
+                    let x0 = k as f32 * width - s;
+                    let grown = width * local;
+                    let (a, b) = if d > 0.0 { (x0 + width - grown, x0 + width) } else { (x0, x0 + grown) };
+                    at([pos2(a + s, 0.0), pos2(b + s + 1.0, 0.0), pos2(b + 1.0, h), pos2(a, h)])
+                })
+                .collect()
+        }
+        Transition::Scan => scan_bars(screen, p).into_iter().map(|bar| [bar.left_top(), bar.right_top(), bar.right_bottom(), bar.left_bottom()]).collect(),
+    }
+}
+
+/// The slash's edge (x from the window's left, at its bottom) at `p`.
+fn slash_edge(screen: Rect, p: f32, d: f32) -> f32 {
+    let (w, s) = (screen.width(), screen.height() * SLANT);
+    let e = ease_in_out(p);
+    if d > 0.0 { lerp(w + 10.0, -s - 30.0, e) } else { lerp(-s - 30.0, w + 10.0, e) }
+}
+
+/// The coloured blade at the slash's edge (it crosses the picture too).
+fn slash_stripe(screen: Rect, p: f32, d: f32) -> [Pos2; 4] {
+    let (h, s) = (screen.height(), screen.height() * SLANT);
+    let edge = slash_edge(screen, p, d);
+    let blade = 26.0 * (1.0 - (2.0 * p - 1.0).abs());
+    let side = if d > 0.0 { -blade } else { blade };
+    [pos2(edge + s, 0.0), pos2(edge + s + side, 0.0), pos2(edge + side, h), pos2(edge, h)].map(|point| point + screen.min.to_vec2())
+}
+
+/// Where a quadrilateral crosses the line at `y`: from which x to which x.
+fn span(points: &[Pos2; 4], y: f32) -> Option<(f32, f32)> {
+    let mut range: Option<(f32, f32)> = None;
+    for i in 0..4 {
+        let (a, b) = (points[i], points[(i + 1) % 4]);
+        if (a.y - y) * (b.y - y) > 0.0 || a.y == b.y {
+            continue;
+        }
+        let x = a.x + (b.x - a.x) * (y - a.y) / (b.y - a.y);
+        range = Some(range.map_or((x, x), |(low, high)| (low.min(x), high.max(x))));
+    }
+    range.filter(|(low, high)| high > low)
+}
+
+/// The window cut into thin rows over `rows`, each row split between the new ground (true)
+/// and the old one (false), following `regions`.
+fn sweep_strips(regions: &[[Pos2; 4]], window: Rect, rows: Rect) -> Vec<(Rect, bool)> {
+    let mut strips = Vec::new();
+    let step = 3.0;
+    let mut y = rows.min.y.floor();
+    while y < rows.max.y {
+        let mut covered: Vec<(f32, f32)> = regions.iter().filter_map(|region| span(region, y + step / 2.0)).map(|(a, b)| (a.max(window.min.x), b.min(window.max.x))).filter(|(a, b)| b > a).collect();
+        covered.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut x = window.min.x;
+        for (a, b) in covered {
+            if a > x {
+                strips.push((Rect::from_min_max(pos2(x, y), pos2(a, y + step)), false));
+            }
+            let start = a.max(x);
+            if b > start {
+                strips.push((Rect::from_min_max(pos2(start, y), pos2(b, y + step)), true));
+            }
+            x = x.max(b);
+        }
+        if x < window.max.x {
+            strips.push((Rect::from_min_max(pos2(x, y), pos2(window.max.x, y + step)), false));
+        }
+        y += step;
+    }
+    strips
+}
+
 impl App {
     /// The window's ground: the previous theme, the new one wiped across it.
     fn background(&mut self, painter: &egui::Painter, screen: Rect, theme: &Theme) {
@@ -687,41 +779,12 @@ impl App {
         let from = self.from_theme;
         painter.rect_filled(screen, 0.0, from.bg);
         motion::motif(painter, screen, &from, 1.0 - e, -self.direction * e * 50.0, stripes);
-        let (w, h) = (screen.width(), screen.height());
-        let s = h * SLANT;
         let d = self.direction;
-        match target.transition {
-            Transition::Slash => {
-                let edge = if d > 0.0 { lerp(w + 10.0, -s - 30.0, e) } else { lerp(-s - 30.0, w + 10.0, e) };
-                let region = if d > 0.0 {
-                    [pos2(edge + s, 0.0), pos2(w + s + 40.0, 0.0), pos2(w + s + 40.0, h), pos2(edge, h)]
-                } else {
-                    [pos2(-s - 40.0, 0.0), pos2(edge + s, 0.0), pos2(edge, h), pos2(-s - 40.0, h)]
-                };
-                fill(painter, &region.map(|p| p + screen.min.to_vec2()), target.bg);
-                let blade = 26.0 * (1.0 - (2.0 * p - 1.0).abs());
-                let side = if d > 0.0 { -blade } else { blade };
-                let stripe = [pos2(edge + s, 0.0), pos2(edge + s + side, 0.0), pos2(edge + side, h), pos2(edge, h)];
-                fill(painter, &stripe.map(|p| p + screen.min.to_vec2()), theme.accent2);
-            }
-            Transition::Shutter => {
-                let blades = 5;
-                let width = (w + s) / blades as f32;
-                for k in 0..blades {
-                    let order = if d > 0.0 { blades - 1 - k } else { k };
-                    let local = ease_out(clamp01((p - order as f32 * 0.09) / 0.55));
-                    let x0 = k as f32 * width - s;
-                    let grown = width * local;
-                    let (a, b) = if d > 0.0 { (x0 + width - grown, x0 + width) } else { (x0, x0 + grown) };
-                    let region = [pos2(a + s, 0.0), pos2(b + s + 1.0, 0.0), pos2(b + 1.0, h), pos2(a, h)];
-                    fill(painter, &region.map(|p| p + screen.min.to_vec2()), target.bg);
-                }
-            }
-            Transition::Scan => {
-                for rect in scan_bars(screen, p) {
-                    painter.rect_filled(rect, 0.0, target.bg);
-                }
-            }
+        for region in wipe_regions(screen, target.transition, p, d) {
+            fill(painter, &region, target.bg);
+        }
+        if target.transition == Transition::Slash {
+            fill(painter, &slash_stripe(screen, p, d), theme.accent2);
         }
         motion::motif(painter, screen, &target, e, d * (1.0 - e) * 60.0, stripes);
     }
@@ -778,18 +841,14 @@ impl App {
         // The pictures: the old one leaves, the new one comes in a little later.
         let closing = self.flight.as_ref().filter(|flight| flight.closing).map(|flight| flight.started);
         let flying = closing.is_some_and(|started| self.progress(started, 0.45) < 1.0);
-        // A scan (the retro CRTs) sweeps the pictures with the ground, bar by bar, in one pass:
-        // the old picture stays put where the bars have not come yet, the new one is behind them.
-        let scan = p < 1.0 && self.previous != self.selected && !flying && self.theme(self.selected).transition == Transition::Scan;
-        if scan {
-            for bar in scan_bars(full, p) {
-                let rest = Rect::from_min_max(pos2(bar.max.x, bar.min.y), pos2(full.max.x, bar.max.y - 1.0));
-                if rest.width() > 0.0 {
-                    self.draw_art(&painter.with_clip_rect(painter.clip_rect().intersect(rest)), self.previous, &poly, area, Vec2::ZERO, 1.0, 1.0);
-                }
-                if bar.width() > 0.0 {
-                    self.draw_art(&painter.with_clip_rect(painter.clip_rect().intersect(bar)), self.selected, &poly, area, Vec2::ZERO, 1.0, 1.0);
-                }
+        // The pictures are swept with the ground, in one pass: the old one stays put where the
+        // new ground has not come yet, the new one is behind it (wipe_regions).
+        let sweep = p < 1.0 && self.previous != self.selected && !flying;
+        let strips = if sweep { sweep_strips(&wipe_regions(full, self.theme(self.selected).transition, p, d), full, area) } else { Vec::new() };
+        if sweep {
+            for (strip, new) in &strips {
+                let index = if *new { self.selected } else { self.previous };
+                self.draw_art(&painter.with_clip_rect(painter.clip_rect().intersect(*strip)), index, &poly, area, Vec2::ZERO, 1.0, 1.0);
             }
         } else if p < 1.0 && self.previous != self.selected {
             let out = ease_in_out(clamp01(p / 0.6));
@@ -800,22 +859,19 @@ impl App {
             // The picture coming back from the page lands here, under the melt and the blade.
             let context = ui.ctx().clone();
             self.flight_back(&painter, &context, full);
-        } else if !scan {
+        } else if !sweep {
             self.draw_art(&painter, self.selected, &poly, area, vec2(d * (1.0 - enter) * 90.0, 0.0), enter, 1.0 + 0.06 * (1.0 - enter));
         }
         self.art = self.art_target(self.selected, full).unwrap_or((poly, area));
 
-        if scan {
-            // The melt and the blade swept with the rest: the old theme's ahead of the bars.
+        if sweep {
+            // The melt and the blade swept with the rest: the old theme's ahead of the new ground.
             let (from, target) = (self.from_theme, self.theme(self.selected));
-            for bar in scan_bars(full, p) {
-                let rest = Rect::from_min_max(pos2(bar.max.x, bar.min.y), pos2(full.max.x, bar.max.y - 1.0));
-                if rest.width() > 0.0 {
-                    Self::art_edge(&painter.with_clip_rect(painter.clip_rect().intersect(rest)), &poly, area, &from, 1.0);
-                }
-                if bar.width() > 0.0 {
-                    Self::art_edge(&painter.with_clip_rect(painter.clip_rect().intersect(bar)), &poly, area, &target, 1.0);
-                }
+            for (strip, new) in &strips {
+                Self::art_edge(&painter.with_clip_rect(painter.clip_rect().intersect(*strip)), &poly, area, if *new { &target } else { &from }, 1.0);
+            }
+            if target.transition == Transition::Slash {
+                fill(&painter.with_clip_rect(painter.clip_rect().intersect(area)), &slash_stripe(full, p, d), theme.accent2);
             }
         } else {
             Self::art_edge(&painter, &poly, area, theme, p);
