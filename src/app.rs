@@ -767,6 +767,7 @@ impl App {
             [points[0], points[1], pos2(lerp(points[1].x, points[2].x, reach), bottom), pos2(lerp(points[0].x, points[3].x, reach), bottom)]
         };
         fill(&painter, &cut(edge(-34.0, 8.0)), theme.accent2);
+        motion::glow(&painter, &cut(edge(-22.0, 10.0)), alpha(theme.accent, 0.4), 16.0);
         fill(&painter, &cut(edge(-22.0, 10.0)), theme.accent);
 
         let project = self.catalog.projects[self.selected].clone();
@@ -1137,6 +1138,9 @@ impl App {
             let shape = slanted(rect, SLANT * 0.5);
             let project = &self.catalog.projects[index];
             let card_theme = self.themes.of(&project.id);
+            if active > 0.0 {
+                motion::glow(&clip, &shape, alpha(card_theme.accent, 0.45 * active), 18.0);
+            }
             if active > 0.5 {
                 fill(&clip, &shape.map(|p| p + vec2(6.0, 6.0)), card_theme.accent2);
             }
@@ -1660,6 +1664,9 @@ pub fn slant_button(ui: &mut egui::Ui, painter: &egui::Painter, id: Id, at: Pos2
     let sink = vec2(3.0, 3.0) * press;
     let shape = slanted(rect.translate(sink + vec2(3.0 * hover, 0.0)), SLANT);
     let fade = |colour: Color32| alpha(colour, appear * colour.a() as f32 / 255.0);
+    if enabled {
+        motion::glow(painter, &shape, alpha(theme.accent, (0.22 + 0.33 * hover) * appear), 16.0 + 6.0 * hover);
+    }
     fill(painter, &shape.map(|p| p + vec2(7.0, 7.0) - sink), fade(if enabled { theme.accent2 } else { alpha(theme.muted, 0.2) }));
     fill(painter, &shape, fade(if enabled { mix(theme.accent, Color32::WHITE, 0.12 * hover) } else { alpha(theme.muted, 0.35) }));
     if hover > 0.0 {

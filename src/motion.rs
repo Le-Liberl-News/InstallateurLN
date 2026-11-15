@@ -177,6 +177,67 @@ pub fn image_in(painter: &Painter, texture: TextureId, placed: Rect, points: &[P
     painter.add(Shape::mesh(mesh));
 }
 
+/// How strong the glows are (motion::glow): 0 turns every one of them off.
+pub const GLOW: f32 = 1.0;
+
+/// A soft light around a convex shape: a ring from `colour` at its edge to nothing `radius`
+/// points out (drawn before the shape, which covers its inside).
+pub fn glow(painter: &Painter, points: &[Pos2], colour: Color32, radius: f32) {
+    if GLOW <= 0.0 || colour.a() == 0 || points.len() < 3 {
+        return;
+    }
+    let colour = Color32::from_rgba_premultiplied(
+        (colour.r() as f32 * GLOW).min(255.0) as u8,
+        (colour.g() as f32 * GLOW).min(255.0) as u8,
+        (colour.b() as f32 * GLOW).min(255.0) as u8,
+        (colour.a() as f32 * GLOW).min(255.0) as u8,
+    );
+    let area: f32 = (0..points.len()).map(|i| {
+        let (a, b) = (points[i], points[(i + 1) % points.len()]);
+        a.x * b.y - b.x * a.y
+    }).sum();
+    let outward = if area > 0.0 { 1.0 } else { -1.0 };
+    let normal = |a: Pos2, b: Pos2| {
+        let d = (b - a).normalized();
+        vec2(d.y, -d.x) * outward
+    };
+    let clear = Color32::from_rgba_premultiplied(0, 0, 0, 0);
+    let mut mesh = egui::Mesh::default();
+    let count = points.len();
+    for i in 0..count {
+        let (previous, point, next) = (points[(i + count - 1) % count], points[i], points[(i + 1) % count]);
+        let (n1, n2) = (normal(previous, point), normal(point, next));
+        let mut miter = (n1 + n2).normalized();
+        miter /= miter.dot(n1).max(0.5);
+        mesh.colored_vertex(point, colour);
+        mesh.colored_vertex(point + miter * radius, clear);
+    }
+    let count = count as u32;
+    for i in 0..count {
+        let j = (i + 1) % count;
+        mesh.add_triangle(2 * i, 2 * i + 1, 2 * j + 1);
+        mesh.add_triangle(2 * i, 2 * j + 1, 2 * j);
+    }
+    painter.add(Shape::mesh(mesh));
+}
+
+/// A glow around a point (a small disc of light fading out).
+pub fn glow_dot(painter: &Painter, c: Pos2, size: f32, colour: Color32, radius: f32) {
+    let points: Vec<Pos2> = (0..12).map(|k| c + Vec2::angled(k as f32 * std::f32::consts::TAU / 12.0) * size).collect();
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(c, colour);
+    for point in &points {
+        mesh.colored_vertex(*point, colour);
+    }
+    for k in 0..12u32 {
+        mesh.add_triangle(0, 1 + k, 1 + (k + 1) % 12);
+    }
+    if GLOW > 0.0 {
+        painter.add(Shape::mesh(mesh));
+    }
+    glow(painter, &points, colour, radius);
+}
+
 /// A picture in a slanted frame without cutting it: the frame is filled with the picture's
 /// blurred copy (`blur`), and the whole picture lies on it in `upright`, its edges fading into the
 /// blur. `crop`: how much larger than whole it may be shown (1: never cut; a very wide picture in a

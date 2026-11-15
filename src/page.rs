@@ -192,6 +192,7 @@ fn hero(app: &mut App, context: &egui::Context, screen: Rect, project: &Project,
         let reach = ease_out_quint(clamp01((t - 0.3) / 0.5));
         let tip = motion::lerp_pos(edge_a, edge_b, reach);
         fill(&painter, &[edge_a + vec2(0.0, 2.0), tip + vec2(0.0, 2.0), tip + vec2(0.0, 9.0), edge_a + vec2(0.0, 9.0)], theme.accent2);
+        motion::glow(&painter, &[edge_a - vec2(0.0, 3.0), tip - vec2(0.0, 3.0), tip + vec2(0.0, 3.0), edge_a + vec2(0.0, 3.0)], alpha(theme.accent, 0.35 * reach), 14.0);
         fill(&painter, &[edge_a - vec2(0.0, 3.0), tip - vec2(0.0, 3.0), tip + vec2(0.0, 3.0), edge_a + vec2(0.0, 3.0)], theme.accent);
         if let Some((.., started)) = flight {
             if app.progress(started, OPEN_TIME) >= 1.0 {
@@ -669,6 +670,7 @@ fn floppies_dialog(app: &mut App, context: &egui::Context, screen: Rect, project
             // On the right, bare: a tick when it is there, a red cross when it is missing.
             let c = pos2(row.max.x - 30.0, row.center().y);
             if ok {
+                motion::glow_dot(&clip, c, 4.0, alpha(theme.accent, 0.18 * text), 16.0);
                 clip.add(egui::Shape::line(vec![c + vec2(-8.0, 0.0), c + vec2(-3.0, 6.0), c + vec2(9.0, -7.0)], Stroke::new(3.0, alpha(theme.accent, text))));
             } else {
                 motion::icon(&clip, Icon::Close, c, 16.0, alpha(RED, text));
