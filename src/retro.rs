@@ -154,6 +154,63 @@ fn output_name(disk: &Path) -> PathBuf {
     disk.with_file_name(format!("{stem} [FR]{extension}"))
 }
 
+/// A file the player chose, as the recipe sees it.
+#[derive(Clone)]
+pub struct Checked {
+    pub path: PathBuf,
+    pub name: String,
+    /// The expected floppies it holds (indexes in `expected`): a pack file can hold several.
+    pub found: Vec<usize>,
+    /// What in it is not known: a floppy's SHA-1 (a version not covered yet), or why.
+    pub unknown: Vec<String>,
+}
+
+/// The floppies the patch expects, by name ("Disquette A (programme)"…).
+pub fn expected(recipe: &Recipe) -> Vec<String> {
+    if recipe.targets.is_empty() {
+        return vec!["Disquette du jeu".to_string()];
+    }
+    let count = recipe.targets.len();
+    recipe
+        .targets
+        .iter()
+        .enumerate()
+        .map(|(index, target)| if target.label.is_empty() { if count == 1 { "Disquette du jeu".to_string() } else { format!("Disquette {}", index + 1) } } else { target.label.clone() })
+        .collect()
+}
+
+/// What a file holds for this patch, read before anything is downloaded.
+pub fn check(recipe: &Recipe, path: &Path) -> Checked {
+    let name = path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
+    let mut checked = Checked { path: path.to_path_buf(), name, found: Vec::new(), unknown: Vec::new() };
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            checked.unknown.push(error.to_string());
+            return checked;
+        }
+    };
+    match recipe.method {
+        Method::Xdelta => {
+            for piece in split_d88(&bytes) {
+                let hash = sha1(piece);
+                match recipe.targets.iter().position(|target| target.variants.contains_key(&hash)) {
+                    Some(index) => checked.found.push(index),
+                    None => checked.unknown.push(format!("SHA-1 {}…", &hash[..12])),
+                }
+            }
+        }
+        Method::Exec if recipe.builtin == "dsretrack" => match crate::dsretrack::recognize(&bytes) {
+            Some(_) => checked.found.push(0),
+            None => checked.unknown.push("version de Dragon Slayer non reconnue".to_string()),
+        },
+        // Its own patcher decides; a floppy image is all that can be seen here.
+        Method::Exec => checked.found.push(0),
+        Method::Link => checked.unknown.push("patch non pris en charge par l'installateur".to_string()),
+    }
+    checked
+}
+
 /// Translates the floppies; returns the message and the folder to show.
 pub fn translate(title: &str, recipe: &Recipe, disks: &[PathBuf], progress: &Shared) -> Result<(String, PathBuf), String> {
     let work = patch::data_dir().join("retro");
@@ -335,6 +392,37 @@ mod tests {
         assert_eq!(pieces[1].len(), 0x500);
         let odd = vec![0u8; 0x300];
         assert_eq!(split_d88(&odd).len(), 1);
+    }
+
+    /// The panel's ticks: a pack file ticks the floppies it holds, an unknown one is named by its SHA-1.
+    #[test]
+    fn checks_what_a_file_holds() {
+        let (a, b) = (floppy(0x400, 1), floppy(0x500, 2));
+        let target = |label: &str, bytes: &[u8]| super::Target { label: label.into(), variants: [(super::sha1(bytes), "delta".to_string())].into_iter().collect() };
+        let recipe = super::Recipe {
+            method: super::Method::Xdelta,
+            archive: "a.zip".into(),
+            command: String::new(),
+            builtin: String::new(),
+            targets: vec![target("Disquette A", &a), target("Disquette B", &b)],
+            extras: Vec::new(),
+            version: None,
+            assets: None,
+        };
+        assert_eq!(super::expected(&recipe), ["Disquette A", "Disquette B"]);
+        let dir = std::env::temp_dir().join("ln-check-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let pack = dir.join("pack.d88");
+        std::fs::write(&pack, [a.clone(), b.clone()].concat()).unwrap();
+        let other = dir.join("autre.d88");
+        std::fs::write(&other, floppy(0x600, 3)).unwrap();
+        let checked = super::check(&recipe, &pack);
+        assert_eq!(checked.found, [0, 1]);
+        assert!(checked.unknown.is_empty());
+        let checked = super::check(&recipe, &other);
+        assert!(checked.found.is_empty());
+        assert!(checked.unknown[0].starts_with("SHA-1 "), "{:?}", checked.unknown);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

@@ -569,6 +569,15 @@ pub fn translate(disk: &Path, patch: &Path) -> Result<PathBuf, String> {
     Ok(target)
 }
 
+/// The version of Dragon Slayer on a floppy, None when it is not one this patch knows.
+pub fn recognize(file: &[u8]) -> Option<&'static str> {
+    let tracks = detrack(file).ok()?;
+    FORMATS
+        .iter()
+        .find(|form| parse_content(&tracks, form, &form.program.clone().collect::<Vec<_>>()).is_some_and(|code| find(&code, form.chain[0], 0).is_some()))
+        .map(|form| form.name)
+}
+
 /// The French floppy's bytes, or why there is none.
 fn run(file: &[u8], original: &[Text], french: &[Text]) -> Result<Vec<u8>, String> {
     let mut tracks = detrack(file)?;

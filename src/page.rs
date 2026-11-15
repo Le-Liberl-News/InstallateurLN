@@ -77,7 +77,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, screen: Rect, theme: &Theme) {
     let switch = ease_out_quint(app.progress(tab_changed, 0.35));
     // The page scrolls itself: the wheel counts wherever the mouse is (hero, top bar,
     // content), a little faster than egui's, eased towards where it is going.
-    let blocked = app.page.as_ref().is_none_or(|page| page.lightbox.is_some() || page.confirm.is_some());
+    let blocked = app.page.as_ref().is_none_or(|page| page.lightbox.is_some() || page.confirm.is_some() || page.floppies.is_some());
     let wheel: f32 = app.player.take_wheel() + if blocked {
         0.0
     } else {
@@ -138,6 +138,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, screen: Rect, theme: &Theme) {
     }
     hero(app, ui.ctx(), screen, &project, theme, t);
     confirm_dialog(app, ui.ctx(), screen, &project, theme);
+    floppies_dialog(app, ui.ctx(), screen, &project, theme);
     lightbox(app, ui.ctx(), screen, &project, theme);
 }
 
@@ -622,15 +623,143 @@ fn job_progress(app: &mut App, ui: &mut egui::Ui, theme: &Theme) {
 }
 
 /// Asks for the floppies, then translates them.
-pub fn pick_floppies(app: &mut App, context: &egui::Context, project: &Project) {
-    let index = app.catalog.projects.iter().position(|candidate| candidate.id == project.id).unwrap_or(0);
-    if let Some(disks) = rfd::FileDialog::new()
-        .set_title(format!("Disquettes de {}", project.title))
-        .add_filter("Images disque PC-88", &["d88", "D88", "t88", "T88"])
-        .pick_files()
-    {
-        if !disks.is_empty() {
-            app.start_floppies(context, index, disks);
+/// Opens the floppies panel (floppies_dialog): the expected floppies, ticked as files are chosen.
+pub fn pick_floppies(app: &mut App, _context: &egui::Context, _project: &Project) {
+    let now = app.now;
+    if let Some(page) = &mut app.page {
+        page.floppies = Some((now, Vec::new()));
+    }
+}
+
+/// The floppies panel: each floppy the patch expects, ticked when a chosen file holds it (by
+/// its SHA-1, or Dragon Slayer's own recognition), so what is missing shows at once. Files come
+/// from the picker or are dropped on the window; the patch runs once every floppy is there.
+fn floppies_dialog(app: &mut App, context: &egui::Context, screen: Rect, project: &Project, theme: &Theme) {
+    let Some(opened) = app.page.as_ref().and_then(|page| page.floppies.as_ref()).map(|(opened, _)| *opened) else { return };
+    let Some(recipe) = app.recipe(project) else { return };
+    let expected = crate::retro::expected(&recipe);
+    let mut add: Vec<std::path::PathBuf> = context.input(|input| input.raw.dropped_files.iter().map(|file| file.path().to_path_buf()).collect());
+    let files = app.page.as_ref().and_then(|page| page.floppies.as_ref()).map(|(_, files)| files.clone()).unwrap_or_default();
+    let found_by = |index: usize| files.iter().find(|file| file.found.contains(&index));
+    let complete = (0..expected.len()).all(|index| found_by(index).is_some());
+    let strangers: Vec<&crate::retro::Checked> = files.iter().filter(|file| !file.unknown.is_empty()).collect();
+    let p = ease_out_quint(app.progress(opened, 0.3));
+    let text = clamp01((p - 0.5) * 2.0);
+    let (mut close, mut patch, mut pick) = (false, false, false);
+    egui::Area::new(Id::new("floppies")).order(Order::Tooltip).fixed_pos(screen.min).constrain(false).show(context, |ui| {
+        let (rect, backdrop) = ui.allocate_exact_size(screen.size(), Sense::click());
+        let painter = ui.painter().clone();
+        painter.rect_filled(rect, 0.0, alpha(Color32::BLACK, 0.7 * p));
+        let rows = expected.len() as f32 * 52.0 + strangers.len() as f32 * 40.0 + if strangers.is_empty() { 0.0 } else { 34.0 };
+        let panel = Rect::from_center_size(rect.center(), vec2(620.0, 268.0 + rows));
+        let shown = Rect::from_min_size(panel.min, vec2(panel.width() * p, panel.height()));
+        fill(&painter, &slanted(shown.translate(vec2(8.0, 8.0)), SLANT * 0.2), theme.accent2);
+        fill(&painter, &slanted(shown, SLANT * 0.2), theme.surface());
+        let clip = painter.with_clip_rect(shown);
+        let left = panel.min.x + 40.0;
+        let mut y = panel.min.y + 34.0;
+        spaced(&clip, pos2(left, y + 10.0), "PATCHER MON JEU", &motion::display(28.0), alpha(theme.ink, text), 1.4);
+        y += 36.0;
+        clip.text(pos2(left, y), Align2::LEFT_TOP, format!("Les images disque de {} (.d88) : chaque disquette reconnue est cochée.", project.title), motion::body(14.0), alpha(theme.muted, text));
+        y += 34.0;
+        // The expected floppies.
+        for (index, label) in expected.iter().enumerate() {
+            let row = Rect::from_min_size(pos2(left, y), vec2(panel.width() - 80.0, 44.0));
+            let file = found_by(index);
+            let ok = file.is_some();
+            fill(&clip, &slanted(row, SLANT * 0.2), alpha(if ok { theme.accent } else { theme.ink }, if ok { 0.12 } else { 0.05 } * text));
+            let mark = Rect::from_center_size(pos2(row.min.x + 26.0, row.center().y), vec2(26.0, 26.0));
+            if ok {
+                fill(&clip, &slanted(mark, SLANT), alpha(theme.accent, text));
+                let c = mark.center();
+                clip.add(egui::Shape::line(vec![c + vec2(-6.0, 0.0), c + vec2(-2.0, 5.0), c + vec2(7.0, -6.0)], Stroke::new(2.6, alpha(theme.bg, text))));
+            } else {
+                clip.add(egui::Shape::closed_line(slanted(mark, SLANT).to_vec(), Stroke::new(1.5, alpha(theme.muted, 0.7 * text))));
+            }
+            clip.text(pos2(row.min.x + 52.0, row.min.y + 7.0), Align2::LEFT_TOP, label, motion::semibold(15.0), alpha(theme.ink, text));
+            let detail = match file {
+                Some(file) => file.name.clone(),
+                None => "manquante".to_string(),
+            };
+            clip.text(pos2(row.min.x + 52.0, row.min.y + 26.0), Align2::LEFT_TOP, detail, motion::body(12.5), alpha(if ok { theme.accent } else { theme.muted }, text));
+            y += 52.0;
+        }
+        // The files that are none of them.
+        if !strangers.is_empty() {
+            y += 6.0;
+            clip.text(pos2(left, y), Align2::LEFT_TOP, "NON RECONNUS", motion::semibold(11.5), alpha(RED, text));
+            y += 28.0;
+            for file in &strangers {
+                let c = pos2(left + 26.0, y + 12.0);
+                motion::icon(&clip, Icon::Close, c, 14.0, alpha(RED, text));
+                clip.text(pos2(left + 52.0, y), Align2::LEFT_TOP, &file.name, motion::semibold(13.5), alpha(theme.ink, text));
+                let why = if file.found.is_empty() { format!("version non prise en charge · {}", file.unknown.join(", ")) } else { format!("en partie seulement · {}", file.unknown.join(", ")) };
+                clip.text(pos2(left + 52.0, y + 18.0), Align2::LEFT_TOP, why, motion::body(11.5), alpha(theme.muted, text));
+                y += 40.0;
+            }
+        }
+        y += 8.0;
+        // Choose files (or drop them).
+        let choose = Rect::from_min_size(pos2(left, y), vec2(motion::width(&painter, "CHOISIR DES FICHIERS…", &motion::semibold(13.0)) + 34.0, 34.0));
+        let response = ui.interact(choose, Id::new("floppies-choose"), Sense::click());
+        let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
+        clip.add(egui::Shape::closed_line(slanted(choose, SLANT).to_vec(), Stroke::new(1.5, alpha(theme.accent, text))));
+        fill(&clip, &slanted(choose, SLANT), alpha(theme.accent, 0.15 * hover * text));
+        clip.text(choose.center(), Align2::CENTER_CENTER, "CHOISIR DES FICHIERS…", motion::semibold(13.0), alpha(theme.accent, text));
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            pick = true;
+        }
+        clip.text(pos2(choose.max.x + 16.0, choose.center().y), Align2::LEFT_CENTER, "ou glissez-les sur cette fenêtre", motion::body(13.0), alpha(theme.muted, text));
+        y += 58.0;
+        let at = pos2(left, y);
+        if slant_button(ui, &painter, Id::new("floppies-patch"), at, "PATCHER", theme, complete && app.job.is_none(), text, app.now) {
+            patch = true;
+        }
+        let cancel = Rect::from_min_size(at + vec2(230.0, 6.0), vec2(120.0, 36.0));
+        let response = ui.interact(cancel, Id::new("floppies-cancel"), Sense::click());
+        let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
+        spaced(&painter, pos2(cancel.min.x + 10.0, cancel.center().y), "ANNULER", &motion::semibold(14.0), alpha(mix(theme.muted, theme.ink, hover), text), 2.0);
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            close = true;
+        }
+        if !complete {
+            let missing = (0..expected.len()).filter(|index| found_by(*index).is_none()).count();
+            clip.text(pos2(left, y + 54.0), Align2::LEFT_TOP, if missing == 1 { "Il manque 1 disquette.".to_string() } else { format!("Il manque {missing} disquettes.") }, motion::body(12.5), alpha(theme.muted, text));
+        }
+        if backdrop.clicked() && !panel.contains(ui.ctx().pointer_interact_pos().unwrap_or_default()) {
+            close = true;
+        }
+    });
+    if pick {
+        if let Some(chosen) = rfd::FileDialog::new().set_title(format!("Disquettes de {}", project.title)).add_filter("Images disque PC-88", &["d88", "D88", "t88", "T88"]).pick_files() {
+            add.extend(chosen);
+        }
+    }
+    if !add.is_empty() {
+        if let Some((_, files)) = app.page.as_mut().and_then(|page| page.floppies.as_mut()) {
+            for path in add {
+                if !files.iter().any(|file| file.path == path) {
+                    files.push(crate::retro::check(&recipe, &path));
+                }
+            }
+        }
+    }
+    if patch {
+        let disks: Vec<std::path::PathBuf> = files.iter().filter(|file| !file.found.is_empty()).map(|file| file.path.clone()).collect();
+        let index = app.page.as_ref().map(|page| page.project).unwrap_or(0);
+        if let Some(page) = &mut app.page {
+            page.floppies = None;
+        }
+        app.start_floppies(context, index, disks);
+    } else if close {
+        if let Some(page) = &mut app.page {
+            page.floppies = None;
         }
     }
 }
@@ -927,7 +1056,7 @@ fn gallery(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media],
     if let Media::Video(id) = &items[current] {
         // The trailer plays here (video.rs), over its poster; seen only when nothing covers it.
         let page = app.page.as_ref();
-        let settled = page.is_some_and(|page| page.lightbox.is_none() && page.confirm.is_none() && app.now - page.opened > 0.9 && app.now - page.tab_changed > 0.35)
+        let settled = page.is_some_and(|page| page.lightbox.is_none() && page.confirm.is_none() && page.floppies.is_none() && app.now - page.opened > 0.9 && app.now - page.tab_changed > 0.35)
             && app.flight.is_none()
             && p >= 1.0;
         // The window's edge cuts the view by itself; only the hero must not cover it.

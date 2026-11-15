@@ -95,6 +95,8 @@ pub struct Page {
     /// The review being sent, and why it was refused.
     pub sending: Option<Slot<Result<(), String>>>,
     pub send_error: Option<String>,
+    /// The floppies panel: when it opened, and the files chosen so far.
+    pub floppies: Option<(f64, Vec<crate::retro::Checked>)>,
 }
 
 /// What a job does (its progress and its success say it).
@@ -436,6 +438,7 @@ impl App {
             author: String::new(),
             sending: None,
             send_error: None,
+            floppies: None,
         });
         self.flight = Some(Flight { from: from.0, from_placed: from.1, started: self.now, closing: false, project: index });
     }
