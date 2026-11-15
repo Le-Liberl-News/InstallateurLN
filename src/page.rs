@@ -223,8 +223,7 @@ fn hero(app: &mut App, context: &egui::Context, screen: Rect, project: &Project,
             let local = t - 0.28 - row as f32 * 0.08;
             // Letter by letter even once landed (app.rs, the home's title: the same reason).
             let local = if app.reduced { 99.0 } else { local };
-            motion::letters(&painter, pos2(rect.min.x + MARGIN + 4.0, y + 4.0), line, font.clone(), alpha(theme.accent2, 0.6), local, 0.02, false);
-            motion::letters(&painter, pos2(rect.min.x + MARGIN, y), line, font.clone(), theme.ink, local, 0.02, false);
+            motion::title_letters(&painter, pos2(rect.min.x + MARGIN, y), line, font.clone(), theme.ink, theme.accent, alpha(theme.accent2, 0.6), local, 0.02);
             y += size;
         }
 

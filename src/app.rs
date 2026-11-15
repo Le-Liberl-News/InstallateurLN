@@ -820,7 +820,8 @@ impl App {
         if p < 1.0 && self.previous != self.selected && t < 0.2 {
             let old = self.catalog.projects[self.previous].title.to_uppercase();
             for (index, line) in motion::wrap(&painter, &old, &font, column).iter().enumerate() {
-                motion::letters(&painter, pos2(left, y + index as f32 * size * 1.0), line, font.clone(), theme.ink, t + 0.1, 0.0, true);
+                let (colour, ring) = if motion::OUTLINED_TITLES { (Color32::WHITE, Some((theme.accent, motion::outline_width(&font)))) } else { (theme.ink, None) };
+                motion::letters_ringed(&painter, pos2(left, y + index as f32 * size * 1.0), line, font.clone(), colour, ring, t + 0.1, 0.0, true);
             }
         } else {
             let mut delay = 0.0;
@@ -828,8 +829,7 @@ impl App {
                 // Letter by letter, with its shadow, even once landed: drawing the line whole
                 // instead places some letters a pixel or more aside (display scaling).
                 let local = if self.reduced { 99.0 } else { t - 0.12 - delay };
-                motion::letters(&painter, pos2(left + 4.0, y + 4.0), line, font.clone(), alpha(theme.accent2, 0.55), local, 0.022, false);
-                motion::letters(&painter, pos2(left, y), line, font.clone(), theme.ink, local, 0.022, false);
+                motion::title_letters(&painter, pos2(left, y), line, font.clone(), theme.ink, theme.accent, alpha(theme.accent2, 0.55), local, 0.022);
                 delay += 0.08;
                 y += size * 1.0;
             }

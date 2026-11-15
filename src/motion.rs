@@ -474,8 +474,34 @@ pub fn shine(painter: &Painter, shape: &[Pos2], period: f32, phase: f32, strengt
 /// A word whose letters rise one after the other from under a mask.
 /// `t` is the time since the reveal began (seconds), `out` makes them leave upwards.
 pub fn letters(painter: &Painter, at: Pos2, text: &str, font: FontId, colour: Color32, t: f32, stagger: f32, out: bool) -> f32 {
+    letters_ringed(painter, at, text, font, colour, None, t, stagger, out)
+}
+
+/// Titles in white with a coloured outline (an essay): false keeps them in the ink colour.
+pub const OUTLINED_TITLES: bool = true;
+
+/// How thick a title's outline is for its size.
+pub fn outline_width(font: &FontId) -> f32 {
+    (font.size * 0.04).clamp(2.0, 4.0)
+}
+
+/// A title's letters (letters) with the essay's colours: white in a ring of `ring`, or `ink`.
+pub fn title_letters(painter: &Painter, at: Pos2, text: &str, font: FontId, ink: Color32, ring: Color32, shadow: Color32, t: f32, stagger: f32) {
+    if OUTLINED_TITLES {
+        let width = outline_width(&font);
+        letters_ringed(painter, at + vec2(4.0, 4.0) + vec2(width, width) * 0.5, text, font.clone(), shadow, Some((shadow, width)), t, stagger, false);
+        letters_ringed(painter, at, text, font, Color32::WHITE, Some((ring, width)), t, stagger, false);
+    } else {
+        letters(painter, at + vec2(4.0, 4.0), text, font.clone(), shadow, t, stagger, false);
+        letters(painter, at, text, font, ink, t, stagger, false);
+    }
+}
+
+/// letters, each letter in a ring of (colour, width) drawn under it when one is given.
+pub fn letters_ringed(painter: &Painter, at: Pos2, text: &str, font: FontId, colour: Color32, ring: Option<(Color32, f32)>, t: f32, stagger: f32, out: bool) -> f32 {
     let height = font.size * 1.1;
-    let clip = Rect::from_min_size(pos2(at.x - 4.0, at.y - height * 0.08), vec2(4000.0, height * 1.12));
+    let pad = ring.map_or(0.0, |(_, width)| width);
+    let clip = Rect::from_min_size(pos2(at.x - 4.0 - pad, at.y - height * 0.08 - pad), vec2(4000.0, height * 1.12 + 2.0 * pad));
     let painter = painter.with_clip_rect(painter.clip_rect().intersect(clip));
     // Each letter where the whole line puts it (kerning included), so the line drawn whole
     // once the letters are in place does not shift by a hair.
@@ -487,8 +513,16 @@ pub fn letters(painter: &Painter, at: Pos2, text: &str, font: FontId, colour: Co
         // The last pixels of the ease are not crawled: the letter lands, whole pixels only.
         let offset = if out { offset.round() } else if offset < 2.5 { 0.0 } else { offset.round() };
         if (out || local > 0.0) && !glyph.chr.is_whitespace() {
+            let place = pos2(at.x + glyph.pos.x, at.y + offset);
+            if let Some((ring_colour, width)) = ring {
+                let galley = painter.layout_no_wrap(glyph.chr.to_string(), font.clone(), ring_colour);
+                for k in 0..16 {
+                    let around = Vec2::angled(k as f32 * std::f32::consts::TAU / 16.0) * width;
+                    painter.galley(place + around, galley.clone(), ring_colour);
+                }
+            }
             let galley = painter.layout_no_wrap(glyph.chr.to_string(), font.clone(), colour);
-            painter.galley(pos2(at.x + glyph.pos.x, at.y + offset), galley, colour);
+            painter.galley(place, galley, colour);
         }
     }
     line.size().x
