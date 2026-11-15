@@ -651,7 +651,7 @@ fn floppies_dialog(app: &mut App, context: &egui::Context, screen: Rect, project
         let painter = ui.painter().clone();
         painter.rect_filled(rect, 0.0, alpha(Color32::BLACK, 0.7 * p));
         let rows = expected.len() as f32 * 52.0 + strangers.len() as f32 * 40.0 + if strangers.is_empty() { 0.0 } else { 34.0 };
-        let panel = Rect::from_center_size(rect.center(), vec2(620.0, 268.0 + rows));
+        let panel = Rect::from_center_size(rect.center(), vec2(620.0, 226.0 + rows));
         let shown = Rect::from_min_size(panel.min, vec2(panel.width() * p, panel.height()));
         fill(&painter, &slanted(shown.translate(vec2(8.0, 8.0)), SLANT * 0.2), theme.accent2);
         fill(&painter, &slanted(shown, SLANT * 0.2), theme.surface());
@@ -659,29 +659,26 @@ fn floppies_dialog(app: &mut App, context: &egui::Context, screen: Rect, project
         let left = panel.min.x + 40.0;
         let mut y = panel.min.y + 34.0;
         spaced(&clip, pos2(left, y + 10.0), "PATCHER MON JEU", &motion::display(28.0), alpha(theme.ink, text), 1.4);
-        y += 36.0;
-        clip.text(pos2(left, y), Align2::LEFT_TOP, format!("Les images disque de {} (.d88) : chaque disquette reconnue est cochée.", project.title), motion::body(14.0), alpha(theme.muted, text));
-        y += 34.0;
+        y += 44.0;
         // The expected floppies.
         for (index, label) in expected.iter().enumerate() {
             let row = Rect::from_min_size(pos2(left, y), vec2(panel.width() - 80.0, 44.0));
             let file = found_by(index);
             let ok = file.is_some();
             fill(&clip, &slanted(row, SLANT * 0.2), alpha(if ok { theme.accent } else { theme.ink }, if ok { 0.12 } else { 0.05 } * text));
-            let mark = Rect::from_center_size(pos2(row.min.x + 26.0, row.center().y), vec2(26.0, 26.0));
+            // On the right, bare: a tick when it is there, a red cross when it is missing.
+            let c = pos2(row.max.x - 30.0, row.center().y);
             if ok {
-                fill(&clip, &slanted(mark, SLANT), alpha(theme.accent, text));
-                let c = mark.center();
-                clip.add(egui::Shape::line(vec![c + vec2(-6.0, 0.0), c + vec2(-2.0, 5.0), c + vec2(7.0, -6.0)], Stroke::new(2.6, alpha(theme.bg, text))));
+                clip.add(egui::Shape::line(vec![c + vec2(-8.0, 0.0), c + vec2(-3.0, 6.0), c + vec2(9.0, -7.0)], Stroke::new(3.0, alpha(theme.accent, text))));
             } else {
-                clip.add(egui::Shape::closed_line(slanted(mark, SLANT).to_vec(), Stroke::new(1.5, alpha(theme.muted, 0.7 * text))));
+                motion::icon(&clip, Icon::Close, c, 16.0, alpha(RED, text));
             }
-            clip.text(pos2(row.min.x + 52.0, row.min.y + 7.0), Align2::LEFT_TOP, label, motion::semibold(15.0), alpha(theme.ink, text));
+            clip.text(pos2(row.min.x + 22.0, row.min.y + 7.0), Align2::LEFT_TOP, label, motion::semibold(15.0), alpha(theme.ink, text));
             let detail = match file {
                 Some(file) => file.name.clone(),
                 None => "manquante".to_string(),
             };
-            clip.text(pos2(row.min.x + 52.0, row.min.y + 26.0), Align2::LEFT_TOP, detail, motion::body(12.5), alpha(if ok { theme.accent } else { theme.muted }, text));
+            clip.text(pos2(row.min.x + 22.0, row.min.y + 26.0), Align2::LEFT_TOP, detail, motion::body(12.5), alpha(if ok { theme.accent } else { theme.muted }, text));
             y += 52.0;
         }
         // The files that are none of them.
