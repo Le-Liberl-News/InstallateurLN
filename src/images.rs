@@ -37,7 +37,9 @@ impl Images {
                 Some((image, blurred)) => {
                     let size = Vec2::new(image.size[0] as f32, image.size[1] as f32);
                     // Mipmaps: a big picture shown small stays smooth instead of shimmering.
-                    let options = if pixel { TextureOptions::NEAREST } else { TextureOptions { mipmap_mode: Some(TextureFilter::Linear), ..TextureOptions::LINEAR } };
+                    // Pixel art: sharp when enlarged, averaged when shrunk (mipmaps), so dithered PC-88
+                    // screens blend into their colours in thumbnails instead of breaking into noise.
+                    let options = if pixel { TextureOptions { mipmap_mode: Some(TextureFilter::Linear), minification: TextureFilter::Linear, ..TextureOptions::NEAREST } } else { TextureOptions { mipmap_mode: Some(TextureFilter::Linear), ..TextureOptions::LINEAR } };
                     let blur = Some(context.load_texture(format!("{url}#flou"), blurred, TextureOptions::LINEAR));
                     Entry::Ready { texture: context.load_texture(&url, image, options), blur, size, since: now }
                 }

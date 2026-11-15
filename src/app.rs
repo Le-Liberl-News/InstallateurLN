@@ -647,6 +647,18 @@ impl eframe::App for App {
     }
 }
 
+/// The scan transition's bars at `p`: each row of the window, as far as the new ground reached.
+fn scan_bars(screen: Rect, p: f32) -> Vec<Rect> {
+    let bars = 12;
+    let height = screen.height() / bars as f32;
+    (0..bars)
+        .map(|j| {
+            let local = ease_out(clamp01((p - j as f32 * 0.035) / 0.5));
+            Rect::from_min_size(screen.min + vec2(0.0, j as f32 * height), vec2(screen.width() * local, height + 1.0))
+        })
+        .collect()
+}
+
 impl App {
     /// The window's ground: the previous theme, the new one wiped across it.
     fn background(&mut self, painter: &egui::Painter, screen: Rect, theme: &Theme) {
@@ -695,16 +707,42 @@ impl App {
                 }
             }
             Transition::Scan => {
-                let bars = 12;
-                let height = h / bars as f32;
-                for j in 0..bars {
-                    let local = ease_out(clamp01((p - j as f32 * 0.035) / 0.5));
-                    let rect = Rect::from_min_size(screen.min + vec2(0.0, j as f32 * height), vec2(w * local, height + 1.0));
+                for rect in scan_bars(screen, p) {
                     painter.rect_filled(rect, 0.0, target.bg);
                 }
             }
         }
         motion::motif(painter, screen, &target, e, d * (1.0 - e) * 60.0);
+    }
+
+    /// The picture's left edge: its melt into the ground, and the blade along it.
+    fn art_edge(painter: &egui::Painter, poly: &[Pos2; 4], area: Rect, theme: &Theme, p: f32) {
+        // The picture melts into the ground on its left and at its bottom.
+        let s = area.height() * SLANT;
+        let melt = if theme.light { 0.2 } else { 0.42 };
+        // From the slanted edge itself: an upright band would show left of the blade while the
+        // ground of another theme sweeps in.
+        let reach_x = s * 0.5 + area.width() * melt;
+        let mut mesh = egui::Mesh::default();
+        let clear = alpha(theme.bg, 0.0);
+        for (point, colour) in [(poly[0] - vec2(2.0, 0.0), theme.bg), (poly[0] + vec2(reach_x, 0.0), clear), (poly[3] + vec2(reach_x, 0.0), clear), (poly[3] - vec2(2.0, 0.0), theme.bg)] {
+            mesh.colored_vertex(point, colour);
+        }
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        painter.add(egui::Shape::mesh(mesh));
+        motion::gradient_rect(painter, Rect::from_min_max(pos2(area.min.x, area.max.y - area.height() * if theme.light { 0.18 } else { 0.32 }), area.max), alpha(theme.bg, 0.0), theme.bg, true);
+        // The blade along its edge, with its hard shadow.
+        let edge = |offset: f32, width: f32| [poly[0] + vec2(offset, 0.0), poly[0] + vec2(offset + width, 0.0), poly[3] + vec2(offset + width, 0.0), poly[3] + vec2(offset, 0.0)];
+        let reach = ease_out(clamp01((p - 0.05) / 0.5));
+        let cut = |points: [Pos2; 4]| {
+            let bottom = lerp(points[0].y, points[3].y, reach);
+            [points[0], points[1], pos2(lerp(points[1].x, points[2].x, reach), bottom), pos2(lerp(points[0].x, points[3].x, reach), bottom)]
+        };
+        fill(painter, &cut(edge(-34.0, 8.0)), theme.accent2);
+        motion::glow(painter, &cut(edge(-22.0, 10.0)), alpha(theme.accent, 0.4), 16.0);
+        fill(painter, &cut(edge(-22.0, 10.0)), theme.accent);
+        motion::shine(painter, &cut(edge(-22.0, 10.0)), 7.0, 2.3, 1.6);
     }
 
     /// Where the home's picture goes: the right of the window, its left edge slanted.
@@ -730,7 +768,20 @@ impl App {
         // The pictures: the old one leaves, the new one comes in a little later.
         let closing = self.flight.as_ref().filter(|flight| flight.closing).map(|flight| flight.started);
         let flying = closing.is_some_and(|started| self.progress(started, 0.45) < 1.0);
-        if p < 1.0 && self.previous != self.selected {
+        // A scan (the retro CRTs) sweeps the pictures with the ground, bar by bar, in one pass:
+        // the old picture stays put where the bars have not come yet, the new one is behind them.
+        let scan = p < 1.0 && self.previous != self.selected && !flying && self.theme(self.selected).transition == Transition::Scan;
+        if scan {
+            for bar in scan_bars(full, p) {
+                let rest = Rect::from_min_max(pos2(bar.max.x, bar.min.y), pos2(full.max.x, bar.max.y - 1.0));
+                if rest.width() > 0.0 {
+                    self.draw_art(&painter.with_clip_rect(painter.clip_rect().intersect(rest)), self.previous, &poly, area, Vec2::ZERO, 1.0, 1.0);
+                }
+                if bar.width() > 0.0 {
+                    self.draw_art(&painter.with_clip_rect(painter.clip_rect().intersect(bar)), self.selected, &poly, area, Vec2::ZERO, 1.0, 1.0);
+                }
+            }
+        } else if p < 1.0 && self.previous != self.selected {
             let out = ease_in_out(clamp01(p / 0.6));
             self.draw_art(&painter, self.previous, &poly, area, vec2(-d * out * 70.0, 0.0), 1.0 - out, 1.04);
         }
@@ -739,37 +790,26 @@ impl App {
             // The picture coming back from the page lands here, under the melt and the blade.
             let context = ui.ctx().clone();
             self.flight_back(&painter, &context, full);
-        } else {
+        } else if !scan {
             self.draw_art(&painter, self.selected, &poly, area, vec2(d * (1.0 - enter) * 90.0, 0.0), enter, 1.0 + 0.06 * (1.0 - enter));
         }
         self.art = self.art_target(self.selected, full).unwrap_or((poly, area));
 
-        // The picture melts into the ground on its left and at its bottom.
-        let s = area.height() * SLANT;
-        let melt = if theme.light { 0.2 } else { 0.42 };
-        // From the slanted edge itself: an upright band would show left of the blade while the
-        // ground of another theme sweeps in.
-        let reach_x = s * 0.5 + area.width() * melt;
-        let mut mesh = egui::Mesh::default();
-        let clear = alpha(theme.bg, 0.0);
-        for (point, colour) in [(poly[0] - vec2(2.0, 0.0), theme.bg), (poly[0] + vec2(reach_x, 0.0), clear), (poly[3] + vec2(reach_x, 0.0), clear), (poly[3] - vec2(2.0, 0.0), theme.bg)] {
-            mesh.colored_vertex(point, colour);
+        if scan {
+            // The melt and the blade swept with the rest: the old theme's ahead of the bars.
+            let (from, target) = (self.from_theme, self.theme(self.selected));
+            for bar in scan_bars(full, p) {
+                let rest = Rect::from_min_max(pos2(bar.max.x, bar.min.y), pos2(full.max.x, bar.max.y - 1.0));
+                if rest.width() > 0.0 {
+                    Self::art_edge(&painter.with_clip_rect(painter.clip_rect().intersect(rest)), &poly, area, &from, 1.0);
+                }
+                if bar.width() > 0.0 {
+                    Self::art_edge(&painter.with_clip_rect(painter.clip_rect().intersect(bar)), &poly, area, &target, 1.0);
+                }
+            }
+        } else {
+            Self::art_edge(&painter, &poly, area, theme, p);
         }
-        mesh.add_triangle(0, 1, 2);
-        mesh.add_triangle(0, 2, 3);
-        painter.add(egui::Shape::mesh(mesh));
-        motion::gradient_rect(&painter, Rect::from_min_max(pos2(area.min.x, area.max.y - area.height() * if theme.light { 0.18 } else { 0.32 }), area.max), alpha(theme.bg, 0.0), theme.bg, true);
-        // The blade along its edge, with its hard shadow.
-        let edge = |offset: f32, width: f32| [poly[0] + vec2(offset, 0.0), poly[0] + vec2(offset + width, 0.0), poly[3] + vec2(offset + width, 0.0), poly[3] + vec2(offset, 0.0)];
-        let reach = ease_out(clamp01((p - 0.05) / 0.5));
-        let cut = |points: [Pos2; 4]| {
-            let bottom = lerp(points[0].y, points[3].y, reach);
-            [points[0], points[1], pos2(lerp(points[1].x, points[2].x, reach), bottom), pos2(lerp(points[0].x, points[3].x, reach), bottom)]
-        };
-        fill(&painter, &cut(edge(-34.0, 8.0)), theme.accent2);
-        motion::glow(&painter, &cut(edge(-22.0, 10.0)), alpha(theme.accent, 0.4), 16.0);
-        fill(&painter, &cut(edge(-22.0, 10.0)), theme.accent);
-        motion::shine(&painter, &cut(edge(-22.0, 10.0)), 7.0, 2.3, 1.6);
 
         let project = self.catalog.projects[self.selected].clone();
         let left = screen.min.x + 56.0;
@@ -820,7 +860,7 @@ impl App {
         if p < 1.0 && self.previous != self.selected && t < 0.2 {
             let old = self.catalog.projects[self.previous].title.to_uppercase();
             for (index, line) in motion::wrap(&painter, &old, &font, column).iter().enumerate() {
-                let (colour, ring) = if motion::OUTLINED_TITLES { (Color32::WHITE, Some((theme.accent, motion::outline_width(&font)))) } else { (theme.ink, None) };
+                let (colour, ring) = if motion::OUTLINED_TITLES && theme.light { (Color32::WHITE, Some((theme.accent, motion::outline_width(&font)))) } else { (theme.ink, None) };
                 motion::letters_ringed(&painter, pos2(left, y + index as f32 * size * 1.0), line, font.clone(), colour, ring, t + 0.1, 0.0, true);
             }
         } else {
@@ -829,7 +869,7 @@ impl App {
                 // Letter by letter, with its shadow, even once landed: drawing the line whole
                 // instead places some letters a pixel or more aside (display scaling).
                 let local = if self.reduced { 99.0 } else { t - 0.12 - delay };
-                motion::title_letters(&painter, pos2(left, y), line, font.clone(), theme.ink, theme.accent, alpha(theme.accent2, 0.55), local, 0.022);
+                motion::title_letters(&painter, pos2(left, y), line, font.clone(), theme.ink, theme.accent, alpha(theme.accent2, 0.55), local, 0.022, theme.light);
                 delay += 0.08;
                 y += size * 1.0;
             }
@@ -1072,6 +1112,9 @@ impl App {
                 let visible = placed.intersect(bounds);
                 let fade = (visible.width().min(visible.height()) * 0.05).clamp(2.0, 16.0);
                 motion::image_soft(painter, texture, placed, visible, fade, tint);
+                if pixel {
+                    motion::crt(painter, visible, opacity * arrived);
+                }
                 return Some(placed);
             }
         }

@@ -201,22 +201,43 @@ pub fn glow(painter: &Painter, points: &[Pos2], colour: Color32, radius: f32) {
         let d = (b - a).normalized();
         vec2(d.y, -d.x) * outward
     };
+    // Round at the corners (an arc of directions from one side's normal to the next), and a
+    // soft falloff: a middle ring at a third of the light, so the edge is not a hard ramp.
     let clear = Color32::from_rgba_premultiplied(0, 0, 0, 0);
-    let mut mesh = egui::Mesh::default();
+    let scale = |c: Color32, k: f32| Color32::from_rgba_premultiplied((c.r() as f32 * k) as u8, (c.g() as f32 * k) as u8, (c.b() as f32 * k) as u8, (c.a() as f32 * k) as u8);
+    let middle = scale(colour, 0.32);
     let count = points.len();
+    let mut rim: Vec<(Pos2, Vec2)> = Vec::new();
     for i in 0..count {
         let (previous, point, next) = (points[(i + count - 1) % count], points[i], points[(i + 1) % count]);
         let (n1, n2) = (normal(previous, point), normal(point, next));
-        let mut miter = (n1 + n2).normalized();
-        miter /= miter.dot(n1).max(0.5);
-        mesh.colored_vertex(point, colour);
-        mesh.colored_vertex(point + miter * radius, clear);
+        let (a1, mut a2) = (n1.y.atan2(n1.x), n2.y.atan2(n2.x));
+        // the shorter way round from n1 to n2
+        while a2 - a1 > std::f32::consts::PI {
+            a2 -= TAU;
+        }
+        while a2 - a1 < -std::f32::consts::PI {
+            a2 += TAU;
+        }
+        let steps = ((a2 - a1).abs() / (std::f32::consts::PI / 14.0)).ceil().max(1.0) as usize;
+        for k in 0..=steps {
+            rim.push((point, Vec2::angled(lerp(a1, a2, k as f32 / steps as f32))));
+        }
     }
-    let count = count as u32;
+    let mut mesh = egui::Mesh::default();
+    for (point, direction) in &rim {
+        mesh.colored_vertex(*point, colour);
+        mesh.colored_vertex(*point + *direction * radius * 0.38, middle);
+        mesh.colored_vertex(*point + *direction * radius, clear);
+    }
+    let count = rim.len() as u32;
     for i in 0..count {
         let j = (i + 1) % count;
-        mesh.add_triangle(2 * i, 2 * i + 1, 2 * j + 1);
-        mesh.add_triangle(2 * i, 2 * j + 1, 2 * j);
+        let (a, b) = (3 * i, 3 * j);
+        mesh.add_triangle(a, a + 1, b + 1);
+        mesh.add_triangle(a, b + 1, b);
+        mesh.add_triangle(a + 1, a + 2, b + 2);
+        mesh.add_triangle(a + 1, b + 2, b + 1);
     }
     painter.add(Shape::mesh(mesh));
 }
@@ -364,12 +385,7 @@ pub fn motif(painter: &Painter, rect: Rect, theme: &Theme, strength: f32, shift:
             }
         }
         Motif::Scanlines => {
-            let line = alpha(Color32::BLACK, 0.22 * strength);
-            let mut y = rect.min.y;
-            while y < rect.max.y {
-                painter.line_segment([pos2(rect.min.x, y), pos2(rect.max.x, y)], Stroke::new(1.0, line));
-                y += 3.0;
-            }
+            // The fine scanlines are on the pictures now (crt): the ground keeps its rolling bar.
             painter.rect_filled(Rect::from_min_size(pos2(rect.min.x, rect.min.y + (shift.abs() * 3.0) % rect.height()), vec2(rect.width(), 2.0)), 0.0, faint);
         }
         Motif::Dots => {
@@ -391,6 +407,44 @@ pub fn motif(painter: &Painter, rect: Rect, theme: &Theme, strength: f32, shift:
     }
 }
 
+/// A CRT's look over a retro screen shown in `rect`: fine scanlines, darker corners, and a
+/// faint band of light rolling down (with the ambient motion).
+pub fn crt(painter: &Painter, rect: Rect, opacity: f32) {
+    if opacity <= 0.0 || rect.width() < 4.0 || rect.height() < 4.0 {
+        return;
+    }
+    let painter = painter.with_clip_rect(painter.clip_rect().intersect(rect));
+    let line = alpha(Color32::BLACK, 0.26 * opacity);
+    let mut y = rect.min.y.floor() + 2.0;
+    while y < rect.max.y {
+        painter.rect_filled(Rect::from_min_size(pos2(rect.min.x, y), vec2(rect.width(), 1.0)), 0.0, line);
+        y += 3.0;
+    }
+    // Corners: the edges darken towards the outside.
+    let inner = rect.shrink2(vec2(rect.width() * 0.16, rect.height() * 0.2));
+    let dark = alpha(Color32::BLACK, 0.42 * opacity);
+    let clear = Color32::from_rgba_premultiplied(0, 0, 0, 0);
+    let mut mesh = egui::Mesh::default();
+    for p in [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()] {
+        mesh.colored_vertex(p, dark);
+    }
+    for p in [inner.left_top(), inner.right_top(), inner.right_bottom(), inner.left_bottom()] {
+        mesh.colored_vertex(p, clear);
+    }
+    for i in 0..4u32 {
+        let j = (i + 1) % 4;
+        mesh.add_triangle(i, j, 4 + j);
+        mesh.add_triangle(i, 4 + j, 4 + i);
+    }
+    painter.add(Shape::mesh(mesh));
+    let clock = ambient_clock(&painter);
+    if AMBIENT > 0.0 {
+        let band = rect.height() * 0.18;
+        let y = rect.min.y - band + (clock * 38.0) % (rect.height() + band * 2.0);
+        gradient_rect(&painter, Rect::from_min_max(pos2(rect.min.x, y), pos2(rect.max.x, y + band)), alpha(Color32::WHITE, 0.0), alpha(Color32::WHITE, 0.035 * opacity), true);
+    }
+}
+
 /// The ambient motion (drifting motifs, passing shines): 0 stills them all.
 pub const AMBIENT: f32 = 1.0;
 
@@ -408,7 +462,8 @@ fn drift(painter: &Painter, rect: Rect, theme: &Theme, strength: f32, clock: f32
     if AMBIENT <= 0.0 {
         return;
     }
-    let colour = alpha(theme.accent, 0.022 * strength);
+    // Dark grounds (the retro CRTs) swallow faint lines: there they show a little more.
+    let colour = alpha(theme.accent, if theme.light { 0.022 } else { 0.05 } * strength);
     let step = 34.0;
     let height = rect.height();
     let s = height * SLANT * 2.0;
@@ -485,9 +540,10 @@ pub fn outline_width(font: &FontId) -> f32 {
     (font.size * 0.04).clamp(2.0, 4.0)
 }
 
-/// A title's letters (letters) with the essay's colours: white in a ring of `ring`, or `ink`.
-pub fn title_letters(painter: &Painter, at: Pos2, text: &str, font: FontId, ink: Color32, ring: Color32, shadow: Color32, t: f32, stagger: f32) {
-    if OUTLINED_TITLES {
+/// A title's letters (letters) with the essay's colours: white in a ring of `ring` on light
+/// grounds (`outlined`), or `ink` (the retro CRTs keep their coloured titles).
+pub fn title_letters(painter: &Painter, at: Pos2, text: &str, font: FontId, ink: Color32, ring: Color32, shadow: Color32, t: f32, stagger: f32, outlined: bool) {
+    if OUTLINED_TITLES && outlined {
         let width = outline_width(&font);
         letters_ringed(painter, at + vec2(4.0, 4.0) + vec2(width, width) * 0.5, text, font.clone(), shadow, Some((shadow, width)), t, stagger, false);
         letters_ringed(painter, at, text, font, Color32::WHITE, Some((ring, width)), t, stagger, false);

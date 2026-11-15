@@ -182,6 +182,9 @@ fn hero(app: &mut App, context: &egui::Context, screen: Rect, project: &Project,
             let pixel = app.themes.of(&project.id).pixel;
             if let Some((texture, _, _)) = app.images.get(context, &url, pixel) {
                 motion::image_in(&painter, texture.id(), placed, &shape, Color32::WHITE);
+                if pixel {
+                    motion::crt(&painter, Rect::from_points(&shape).intersect(placed), 1.0);
+                }
             }
         }
         let landed = ease_out(clamp01((t - 0.2) / 0.5));
@@ -223,7 +226,7 @@ fn hero(app: &mut App, context: &egui::Context, screen: Rect, project: &Project,
             let local = t - 0.28 - row as f32 * 0.08;
             // Letter by letter even once landed (app.rs, the home's title: the same reason).
             let local = if app.reduced { 99.0 } else { local };
-            motion::title_letters(&painter, pos2(rect.min.x + MARGIN, y), line, font.clone(), theme.ink, theme.accent, alpha(theme.accent2, 0.6), local, 0.02);
+            motion::title_letters(&painter, pos2(rect.min.x + MARGIN, y), line, font.clone(), theme.ink, theme.accent, alpha(theme.accent2, 0.6), local, 0.02, theme.light);
             y += size;
         }
 
@@ -1456,7 +1459,7 @@ fn credits(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme, l
     if groups.is_empty() {
         let height = place(ui, left, top, width.min(600.0), 1.0, |ui| {
             ui.label(RichText::new("Les crédits de ce projet sont sur le site.").size(16.0));
-            if ui.add(egui::Button::new(RichText::new("Voir la page du projet").color(theme.accent)).frame(false)).clicked() {
+            if link(ui, "Voir la page du projet", theme.accent).clicked() {
                 open_url(&project.page);
             }
         });
