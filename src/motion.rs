@@ -590,6 +590,10 @@ pub enum Icon {
     Right,
     Close,
     Help,
+    /// The platform account (a head and shoulders).
+    Account,
+    /// A warning (a triangle and its mark).
+    Warning,
 }
 
 /// A filled outline seen whole from its centre (fan of triangles), with a thin stroke of the same
@@ -706,6 +710,19 @@ pub fn icon(painter: &Painter, icon: Icon, c: Pos2, s: f32, colour: Color32) {
         Icon::Help => {
             painter.circle_stroke(c, h, stroke);
             painter.text(c + vec2(0.0, s * 0.03), Align2::CENTER_CENTER, "?", semibold(s * 0.78), colour);
+        }
+        Icon::Account => {
+            painter.circle_filled(c + vec2(0.0, -h * 0.38), h * 0.42, colour);
+            let shoulders: Vec<Pos2> = (0..=12).map(|k| {
+                let a = std::f32::consts::PI * (1.0 + k as f32 / 12.0);
+                c + vec2(a.cos() * h * 0.85, h * 1.0 + a.sin() * h * 0.95)
+            }).collect();
+            silhouette(painter, c + vec2(0.0, h * 0.6), &shoulders, colour);
+        }
+        Icon::Warning => {
+            let points = vec![c + vec2(0.0, -h), c + vec2(h * 1.1, h * 0.9), c + vec2(-h * 1.1, h * 0.9)];
+            painter.add(Shape::closed_line(points, stroke));
+            painter.text(c + vec2(0.0, h * 0.28), Align2::CENTER_CENTER, "!", semibold(s * 0.62), colour);
         }
     }
 }

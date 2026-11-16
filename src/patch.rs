@@ -105,6 +105,8 @@ fn release_channel() -> String {
 pub struct Offers {
     pub releases: Vec<Release>,
     pub private_available: bool,
+    /// The account's token was accepted (false once it expired or was revoked).
+    pub signed_in: bool,
 }
 
 impl Offers {
@@ -120,6 +122,8 @@ struct ApiOffers {
     versions: Vec<Release>,
     #[serde(default)]
     private_available: bool,
+    #[serde(default)]
+    signed_in: bool,
 }
 
 #[derive(Deserialize)]
@@ -166,7 +170,7 @@ pub fn offers(project: &str, token: Option<&str>) -> Result<Offers, String> {
             release
         })
         .collect();
-    Ok(Offers { releases, private_available: api.private_available })
+    Ok(Offers { releases, private_available: api.private_available, signed_in: api.signed_in })
 }
 
 /// The version in a release folder (LN_PATCH_DIR).
@@ -494,7 +498,7 @@ mod release_selection_tests {
     #[test]
     fn reads_the_channels_offered() {
         let api: ApiOffers = serde_json::from_str(r#"{"versions":[{"channel":"release","label":"Release","version":"1.1.0","tag":"v2026.11.13.1053"},{"channel":"test","label":"Test publique","test":true,"version":"1.2.0-test","tag":"v2026.11.16.1200","warning":"Scénario traduit à 60 %."}],"private_available":true}"#).unwrap();
-        let offers = Offers { releases: api.versions, private_available: api.private_available };
+        let offers = Offers { releases: api.versions, private_available: api.private_available, signed_in: false };
         assert_eq!(offers.pick(None).unwrap().channel, "release");
         assert!(offers.pick(Some("test")).unwrap().warning.contains("60 %"));
         assert_eq!(offers.pick(Some("private")).unwrap().channel, "release");

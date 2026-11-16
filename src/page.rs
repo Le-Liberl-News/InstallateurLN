@@ -77,7 +77,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, screen: Rect, theme: &Theme) {
     let switch = ease_out_quint(app.progress(tab_changed, 0.35));
     // The page scrolls itself: the wheel counts wherever the mouse is (hero, top bar,
     // content), a little faster than egui's, eased towards where it is going.
-    let blocked = app.page.as_ref().is_none_or(|page| page.lightbox.is_some() || page.confirm.is_some() || page.floppies.is_some());
+    let blocked = app.access.open || app.page.as_ref().is_none_or(|page| page.lightbox.is_some() || page.confirm.is_some() || page.floppies.is_some());
     let wheel: f32 = app.player.take_wheel() + if blocked {
         0.0
     } else {
@@ -1066,7 +1066,7 @@ fn gallery(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media],
     if let Media::Video(id) = &items[current] {
         // The trailer plays here (video.rs), over its poster; seen only when nothing covers it.
         let page = app.page.as_ref();
-        let settled = page.is_some_and(|page| page.lightbox.is_none() && page.confirm.is_none() && page.floppies.is_none() && app.now - page.opened > 0.9 && app.now - page.tab_changed > 0.35)
+        let settled = !app.access.open && page.is_some_and(|page| page.lightbox.is_none() && page.confirm.is_none() && page.floppies.is_none() && app.now - page.opened > 0.9 && app.now - page.tab_changed > 0.35)
             && app.flight.is_none()
             && p >= 1.0;
         // The window's edge cuts the view by itself; only the hero must not cover it.
@@ -1520,7 +1520,6 @@ fn credits(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme, l
 fn versions_picker(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
     let Some(Ok(offers)) = app.offered(project) else { return };
     let chosen = app.release(project).and_then(Result::ok).flatten();
-    let signed_in = app.access.session.clone();
     let busy = app.job.is_some();
     if offers.releases.len() > 1 || offers.releases.iter().any(|release| release.channel != "release") {
         ui.add_space(4.0);
@@ -1552,31 +1551,22 @@ fn versions_picker(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &
             app.choose_channel(project, &channel);
         }
     }
-    if let Some(release) = chosen.filter(|release| release.test) {
+    if offers.private_available && app.access.session.is_none() {
+        ui.add_space(4.0);
+        ui.label(RichText::new("Une version de test privée existe : connectez-vous avec le bouton de compte, en haut à droite.").size(13.0).color(theme.muted));
+    }
+    // A test version's disclaimer, as written on the platform, with a warning sign.
+    if let Some(warning) = chosen.filter(|release| release.test).map(|release| release.warning.trim().to_string()).filter(|warning| !warning.is_empty()) {
         ui.add_space(8.0);
         let amber = Color32::from_rgb(0xd9, 0x9a, 0x2b);
         egui::Frame::new().fill(alpha(amber, 0.13)).stroke(Stroke::new(1.0, alpha(amber, 0.7))).inner_margin(10.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(if release.private { "VERSION DE TEST PRIVÉE" } else { "VERSION DE TEST" }).font(motion::semibold(12.0)).color(theme.ink));
-            if !release.warning.trim().is_empty() {
-                ui.label(RichText::new(release.warning.trim()).size(14.0).color(theme.ink));
-            }
+            ui.horizontal_top(|ui| {
+                let (spot, _) = ui.allocate_exact_size(vec2(22.0, 20.0), Sense::hover());
+                motion::icon_on(ui.painter(), Icon::Warning, spot.center(), 16.0, mix(amber, theme.ink, 0.25), theme.bg);
+                ui.add(egui::Label::new(RichText::new(warning).size(14.0).color(theme.ink)).wrap());
+            });
         });
-    }
-    if let Some(session) = signed_in {
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("Connecté : {}", session.username)).size(13.0).color(theme.muted));
-            if !busy && link(ui, "Se déconnecter", theme.accent).clicked() {
-                let context = ui.ctx().clone();
-                app.sign_out(&context);
-            }
-        });
-    } else if offers.private_available {
-        ui.add_space(6.0);
-        if link(ui, "Se connecter pour la version de test privée", theme.accent).clicked() {
-            app.open_login();
-        }
     }
     ui.add_space(8.0);
 }

@@ -1,6 +1,7 @@
-//! The platform account, signed in from the installer to get the private test versions
-//! (plateforme/api/installer-session.php). The password and the session token stay in memory:
-//! nothing is written to disk, and the session lasts until the installer is closed.
+//! The platform account, signed in from the installer (the account button, top right) to get the
+//! private test versions (plateforme/api/installer-session.php). The password is never kept: the
+//! session's download-only token is remembered in the installer's folder (compte.json) until
+//! signing out or its expiry (30 days).
 #![allow(deprecated)]
 
 use crate::app::{App, Slot, slant_button, spaced};
@@ -9,7 +10,7 @@ use eframe::egui::{self, Color32, CursorIcon, Id, Order, Rect, Sense, vec2};
 use serde::Deserialize;
 
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, serde::Serialize)]
 pub struct Session {
     pub token: String,
     pub username: String,
@@ -26,11 +27,42 @@ pub struct Access {
     pub pending: Slot<Result<Session, String>>,
     pub busy: bool,
     pub error: Option<String>,
+    /// The first field takes the keyboard when the dialog opens.
+    pub focus: bool,
+}
+
+fn remembered_file() -> std::path::PathBuf {
+    crate::patch::data_dir().join("compte.json")
+}
+
+impl Access {
+    /// The account signed in last time, if it was remembered.
+    pub fn remembered() -> Access {
+        let session = std::fs::read_to_string(remembered_file()).ok().and_then(|text| serde_json::from_str::<Session>(&text).ok());
+        Access { login: session.as_ref().map(|session| session.username.clone()).unwrap_or_default(), session, ..Access::default() }
+    }
+}
+
+fn remember(session: Option<&Session>) {
+    let file = remembered_file();
+    match session {
+        Some(session) => {
+            let _ = std::fs::create_dir_all(crate::patch::data_dir());
+            let _ = std::fs::write(&file, serde_json::to_string(session).unwrap_or_default());
+        }
+        None => {
+            let _ = std::fs::remove_file(&file);
+        }
+    }
+}
+
+fn session_url() -> String {
+    format!("{}/plateforme/api/installer-session.php", crate::patch::platform())
 }
 
 fn login(account: &str, password: &str) -> Result<Session, String> {
     let body = serde_json::json!({ "login": account, "password": password });
-    let response = ureq::post(&format!("{}/plateforme/api/installer-session.php", crate::patch::platform()))
+    let response = ureq::post(&session_url())
         .header("Content-Type", "application/json")
         .header("User-Agent", "InstallateurLiberlNews")
         .config()
@@ -50,13 +82,20 @@ fn login(account: &str, password: &str) -> Result<Session, String> {
 impl App {
     pub fn open_login(&mut self) {
         self.access.open = true;
+        self.access.focus = true;
         self.access.opened = Some(self.now);
         self.access.error = None;
     }
 
-    /// Signs out: the private versions are no longer offered.
+    /// Signs out: the session ends on the platform and is forgotten here; the private versions are
+    /// no longer offered.
     pub fn sign_out(&mut self, context: &egui::Context) {
-        self.access.session = None;
+        if let Some(session) = self.access.session.take() {
+            std::thread::spawn(move || {
+                let _ = ureq::delete(&session_url()).header("User-Agent", "InstallateurLiberlNews").header("Authorization", &format!("Bearer {}", session.token)).call();
+            });
+        }
+        remember(None);
         self.channels.retain(|_, channel| channel != "private");
         self.load_offers(context);
     }
@@ -68,6 +107,7 @@ impl App {
             self.access.busy = false;
             match answer {
                 Ok(session) => {
+                    remember(Some(&session));
                     self.access.session = Some(session);
                     self.access.open = false;
                     self.access.error = None;
@@ -83,7 +123,8 @@ impl App {
         let p = ease_out_quint(self.progress(opened, 0.3));
         let theme = self.current_theme();
         let screen = self.screen;
-        let (mut submit, mut close) = (false, false);
+        let (mut submit, mut close, mut leave) = (false, false, false);
+        let signed_in = self.access.session.as_ref().map(|session| session.username.clone());
         egui::Area::new(Id::new("login")).order(Order::Tooltip).fixed_pos(screen.min).constrain(false).show(context, |ui| {
             let (rect, backdrop) = ui.allocate_exact_size(screen.size(), Sense::click());
             let painter = ui.painter().clone();
@@ -95,8 +136,34 @@ impl App {
             let text = clamp01((p - 0.5) * 2.0);
             let clip = painter.with_clip_rect(shown);
             spaced(&clip, panel.min + vec2(36.0, 44.0), "COMPTE DE LA PLATEFORME", &motion::display(26.0), alpha(theme.ink, text), 1.4);
+            if let Some(name) = &signed_in {
+                // Signed in: who, and the way out.
+                let galley = clip.layout(
+                    format!("Connecté en tant que {name}. Les versions de test privées sont proposées sur les fiches des jeux qui en ont."),
+                    motion::body(14.0),
+                    alpha(theme.muted, text),
+                    panel.width() - 72.0,
+                );
+                clip.galley(panel.min + vec2(36.0, 66.0), galley, theme.muted);
+                let at = panel.min + vec2(36.0, 250.0);
+                if slant_button(ui, &painter, Id::new("logout"), at, "SE DÉCONNECTER", &theme, self.job.is_none(), text, self.now) {
+                    leave = true;
+                }
+                let back = Rect::from_min_size(at + vec2(250.0, 6.0), vec2(120.0, 36.0));
+                let response = ui.interact(back, Id::new("login-no"), Sense::click());
+                let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
+                spaced(&painter, egui::pos2(back.min.x + 10.0, back.center().y), "FERMER", &motion::semibold(14.0), alpha(mix(theme.muted, theme.ink, hover), text), 2.0);
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                }
+                close |= response.clicked() || ui.input(|input| input.key_pressed(egui::Key::Escape));
+                if backdrop.clicked() && !panel.contains(ui.ctx().pointer_interact_pos().unwrap_or_default()) {
+                    close = true;
+                }
+                return;
+            }
             let galley = clip.layout(
-                "Pour les versions de test privées, réservées à l'équipe et aux testeurs. Rien n'est enregistré sur ce PC.".to_string(),
+                "Pour les versions de test privées, réservées à l'équipe et aux testeurs. Le mot de passe n'est pas enregistré : la connexion est retenue 30 jours.".to_string(),
                 motion::body(14.0),
                 alpha(theme.muted, text),
                 panel.width() - 72.0,
@@ -108,8 +175,9 @@ impl App {
             };
             let account = field(ui, 116.0, &mut self.access.login, "Pseudo ou e-mail", false);
             let password = field(ui, 160.0, &mut self.access.password, "Mot de passe", true);
-            if self.access.opened == Some(opened) && p < 0.2 {
-                account.request_focus();
+            if std::mem::take(&mut self.access.focus) {
+                self.player.release_focus();
+                if self.access.login.is_empty() { account.request_focus() } else { password.request_focus() }
             }
             if password.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
                 submit = true;
@@ -134,6 +202,11 @@ impl App {
                 close = true;
             }
         });
+        if leave {
+            self.access.open = false;
+            self.sign_out(context);
+            return;
+        }
         if close && !self.access.busy {
             self.access.open = false;
             self.access.password.clear();

@@ -59,6 +59,7 @@ mod win {
         pub fn SetWindowPos(hwnd: *mut c_void, after: *mut c_void, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
         pub fn SetWindowRgn(hwnd: *mut c_void, region: *mut c_void, redraw: i32) -> i32;
         pub fn GetParent(hwnd: *mut c_void) -> *mut c_void;
+        pub fn SetFocus(hwnd: *mut c_void) -> *mut c_void;
         pub fn GetWindowLongPtrW(hwnd: *mut c_void, index: i32) -> isize;
         pub fn SetWindowLongPtrW(hwnd: *mut c_void, index: i32, value: isize) -> isize;
     }
@@ -87,6 +88,25 @@ impl Player {
     pub fn exists(&self) -> bool {
         false
     }
+
+    /// Gives the keyboard back to the installer's window (the trailer's view keeps it once clicked,
+    /// even hidden: a dialog's fields would not get the typing).
+    #[cfg(windows)]
+    pub fn release_focus(&self) {
+        if let Some(current) = &self.current {
+            if !current.hwnd.is_null() {
+                unsafe {
+                    let window = win::GetParent(current.hwnd);
+                    if !window.is_null() {
+                        win::SetFocus(window);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn release_focus(&self) {}
 
     /// What the wheel did over the video since the last frame (points, egui's direction).
     pub fn take_wheel(&self) -> f32 {

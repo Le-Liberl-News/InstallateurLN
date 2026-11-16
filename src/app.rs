@@ -241,7 +241,7 @@ impl App {
         let retro: HashMap<String, Slot<crate::retro::Recipe>> = HashMap::new();
         let from_theme = themes.of(catalog.projects.first().map(|project| project.id.as_str()).unwrap_or("default"));
         let mut app = App {
-            access: crate::access::Access::default(),
+            access: crate::access::Access::remembered(),
             offers: HashMap::new(),
             channels: HashMap::new(),
             retro_channel: HashMap::new(),
@@ -590,6 +590,12 @@ impl App {
                     None => self.page = None,
                 }
             }
+        }
+        // A remembered session the platform refused (expired, revoked): forgotten.
+        let refused = self.access.session.is_some()
+            && self.offers.values().any(|slot| matches!(&*slot.lock().unwrap(), Some(Ok(offers)) if !offers.signed_in));
+        if refused {
+            self.sign_out(context);
         }
         // The site's catalogue may bring games the bundled one lacked: their versions too.
         if self.catalog.projects.iter().any(|project| (project.game.is_some() || project.series == Series::Retro) && !self.offers.contains_key(&project.id)) {
@@ -1768,6 +1774,28 @@ impl App {
                     }
                     if response.on_hover_text(tip).clicked() {
                         open_url(url);
+                    }
+                    right -= 42.0;
+                }
+                // The platform account (private test versions): filled in once signed in.
+                {
+                    let spot = Rect::from_center_size(pos2(right - 10.0, rect.center().y), vec2(34.0, 32.0));
+                    let response = ui.interact(spot, Id::new("account"), Sense::click());
+                    let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
+                    let on = if self.access.session.is_some() { 1.0 } else { hover };
+                    let chip = slanted(spot.shrink(1.0), SLANT);
+                    fill(&painter, &chip.map(|p| p + vec2(3.0, 3.0)), alpha(theme.accent2, 0.5 + 0.5 * on));
+                    fill(&painter, &chip, mix(theme.bg, theme.accent, on));
+                    motion::icon_on(&painter, Icon::Account, spot.center(), 15.0, mix(theme.ink, theme.bg, on), mix(theme.bg, theme.accent, on));
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                    }
+                    let tip = match &self.access.session {
+                        Some(session) => format!("Connecté : {}", session.username),
+                        None => "Compte de la plateforme (versions de test privées)".to_string(),
+                    };
+                    if response.on_hover_text(tip).clicked() {
+                        self.open_login();
                     }
                     right -= 42.0;
                 }
