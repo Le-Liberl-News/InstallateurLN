@@ -9,7 +9,7 @@
 //! otherwise: the game's prefix gets `"dsound"="native,builtin"`.
 
 use crate::games::Game;
-use crate::patch::{self, API, Shared};
+use crate::patch::{self, Shared};
 use serde::Deserialize;
 use std::fs::{self, File};
 use std::io;
@@ -47,7 +47,7 @@ pub enum VoiceState {
 const VERSION_FILE: &str = "version-voix.txt";
 
 fn url(project: &str) -> String {
-    format!("{API}?project={project}&channel=voices")
+    format!("{}?project={project}&channel=voices", patch::api())
 }
 
 /// The voices the platform serves for a project; None when there are none yet.

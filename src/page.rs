@@ -382,8 +382,9 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
         let recipe = app.recipe(project).filter(crate::retro::Recipe::local);
         if let Some(version) = recipe.as_ref().and_then(|recipe| recipe.version.clone()) {
             ui.label(RichText::new(format!("Patch {version}")).color(theme.muted));
-            ui.add_space(8.0);
+            ui.add_space(4.0);
         }
+        versions_picker(app, ui, project, theme);
         // The button goes under what was just written (never over it).
         let at = ui.cursor().min;
         let ours = app.job.as_ref().is_some_and(|job| job.project == project.id);
@@ -479,7 +480,9 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
         }
     }
     ui.add_space(26.0);
-    ui.label(RichText::new("DERNIÈRE VERSION").font(motion::semibold(13.0)).color(theme.muted));
+    // A test version is no "latest version": its channel says what it is.
+    let heading_text = if matches!(&release, Some(Ok(Some(release))) if release.test) { "VERSION" } else { "DERNIÈRE VERSION" };
+    ui.label(RichText::new(heading_text).font(motion::semibold(13.0)).color(theme.muted));
     let latest = match &release {
         Some(Ok(Some(release))) => release.version.clone(),
         Some(Ok(None)) => "—".into(),
@@ -493,6 +496,7 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
         size -= 2.0;
     }
     motion::shadowed(ui.painter(), rect.left_center(), Align2::LEFT_CENTER, &latest, motion::display(size), theme.accent, alpha(theme.accent2, 0.7), (size / 14.0).max(2.0));
+    versions_picker(app, ui, project, theme);
     let installed_text = match &installed {
         Installed::Nothing => "aucune (jeu en anglais)".to_string(),
         Installed::OldPatch => "ancien patch (mis de côté à l'installation)".to_string(),
@@ -1509,4 +1513,70 @@ fn credits(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme, l
     }
     let tallest = heights.iter().cloned().fold(0.0, f32::max);
     ui.allocate_exact_size(vec2(1.0, tallest), Sense::hover());
+}
+
+/// The versions a game has (release, public test, private test): one chip each to choose the one
+/// installed, the disclaimer of a test version, and the platform account for the private ones.
+fn versions_picker(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
+    let Some(Ok(offers)) = app.offered(project) else { return };
+    let chosen = app.release(project).and_then(Result::ok).flatten();
+    let signed_in = app.access.session.clone();
+    let busy = app.job.is_some();
+    if offers.releases.len() > 1 || offers.releases.iter().any(|release| release.channel != "release") {
+        ui.add_space(4.0);
+        let mut picked = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
+            for release in &offers.releases {
+                let on = chosen.as_ref().is_some_and(|chosen| chosen.channel == release.channel);
+                let label = format!("{}  {}", if release.label.is_empty() { release.channel.to_uppercase() } else { release.label.to_uppercase() }, release.version);
+                let font = motion::semibold(12.0);
+                let width = motion::width(ui.painter(), &label, &font) + label.chars().count() as f32 * 0.8 + 30.0;
+                let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), if busy { Sense::hover() } else { Sense::click() });
+                let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered() && !on, 0.12);
+                let shape = slanted(rect, SLANT * 0.5);
+                if on {
+                    fill(ui.painter(), &shape.map(|point| point + vec2(3.0, 3.0)), theme.accent2);
+                }
+                fill(ui.painter(), &shape, if on { theme.accent } else { mix(theme.surface(), theme.accent, 0.12 + 0.2 * hover) });
+                spaced(ui.painter(), pos2(rect.min.x + 14.0, rect.center().y), &label, &font, if on { theme.bg } else { theme.ink }, 1.0);
+                if response.hovered() && !on && !busy {
+                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                }
+                if response.on_hover_text(if release.private { "Version de test privée (équipe et testeurs)" } else if release.test { "Version de test publique" } else { "Version publique" }).clicked() {
+                    picked = Some(release.channel.clone());
+                }
+            }
+        });
+        if let Some(channel) = picked {
+            app.choose_channel(project, &channel);
+        }
+    }
+    if let Some(release) = chosen.filter(|release| release.test) {
+        ui.add_space(8.0);
+        let amber = Color32::from_rgb(0xd9, 0x9a, 0x2b);
+        egui::Frame::new().fill(alpha(amber, 0.13)).stroke(Stroke::new(1.0, alpha(amber, 0.7))).inner_margin(10.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(if release.private { "VERSION DE TEST PRIVÉE" } else { "VERSION DE TEST" }).font(motion::semibold(12.0)).color(theme.ink));
+            if !release.warning.trim().is_empty() {
+                ui.label(RichText::new(release.warning.trim()).size(14.0).color(theme.ink));
+            }
+        });
+    }
+    if let Some(session) = signed_in {
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("Connecté : {}", session.username)).size(13.0).color(theme.muted));
+            if !busy && link(ui, "Se déconnecter", theme.accent).clicked() {
+                let context = ui.ctx().clone();
+                app.sign_out(&context);
+            }
+        });
+    } else if offers.private_available {
+        ui.add_space(6.0);
+        if link(ui, "Se connecter pour la version de test privée", theme.accent).clicked() {
+            app.open_login();
+        }
+    }
+    ui.add_space(8.0);
 }

@@ -39,6 +39,8 @@ const THEME_TIME: f32 = 0.62;
 pub const OPEN_TIME: f32 = 0.55;
 
 pub struct GameState {
+    /// The platform, or a release folder (LN_PATCH_DIR) whose version is `release`.
+    pub source: Source,
     pub folder: Option<(PathBuf, Store)>,
     pub installed: Installed,
     pub release: Slot<Result<Option<Release>, String>>,
@@ -124,6 +126,13 @@ pub struct Outcome {
 }
 
 pub struct App {
+    /// The platform account signed in from the installer (private test versions).
+    pub access: crate::access::Access,
+    /// Per project: the versions the platform offers (patch::offers), and the channel chosen.
+    pub offers: HashMap<String, Slot<Result<crate::patch::Offers, String>>>,
+    pub channels: HashMap<String, String>,
+    /// Per retro project: the channel its recipe was asked for.
+    pub retro_channel: HashMap<String, String>,
     pub catalog: Catalog,
     pub incoming: Slot<Catalog>,
     pub themes: Themes,
@@ -207,14 +216,11 @@ impl App {
                 let folder = detect::find(game);
                 let installed = folder.as_ref().map(|(path, _)| patch::installed(game, path)).unwrap_or(Installed::Nothing);
                 let release: Slot<Result<Option<Release>, String>> = Arc::default();
-                {
-                    let (release, context) = (release.clone(), context.clone());
-                    std::thread::spawn(move || {
-                        *release.lock().unwrap() = Some(patch::release(&Source::for_game(game)));
-                        context.request_repaint();
-                    });
+                let source = Source::for_game(game);
+                if let Source::Folder(folder) = &source {
+                    *release.lock().unwrap() = Some(patch::folder_release(folder));
                 }
-                (game.project, GameState { folder, installed, release })
+                (game.project, GameState { folder, installed, release, source })
             })
             .collect();
         let voices = crate::games::GAMES
@@ -232,24 +238,13 @@ impl App {
             .collect();
         let themes = Themes::load();
         let catalog = catalog::bundled();
-        let retro = catalog
-            .projects
-            .iter()
-            .filter(|project| project.series == Series::Retro)
-            .map(|project| {
-                let slot: Slot<crate::retro::Recipe> = Arc::default();
-                let (inner, context, id) = (slot.clone(), context.clone(), project.id.clone());
-                std::thread::spawn(move || {
-                    if let Some(recipe) = crate::retro::platform(&id) {
-                        *inner.lock().unwrap() = Some(recipe);
-                        context.request_repaint();
-                    }
-                });
-                (project.id.clone(), slot)
-            })
-            .collect();
+        let retro: HashMap<String, Slot<crate::retro::Recipe>> = HashMap::new();
         let from_theme = themes.of(catalog.projects.first().map(|project| project.id.as_str()).unwrap_or("default"));
-        App {
+        let mut app = App {
+            access: crate::access::Access::default(),
+            offers: HashMap::new(),
+            channels: HashMap::new(),
+            retro_channel: HashMap::new(),
             catalog,
             incoming,
             themes,
@@ -306,7 +301,9 @@ impl App {
             updating: Arc::default(),
             update_started: false,
             trailer: None,
-        }
+        };
+        app.load_offers(&context);
+        app
     }
 
     /// Progress (0 to 1) of an animation that began at `since` and lasts `seconds`;
@@ -360,8 +357,39 @@ impl App {
         project.game.and_then(|game| self.games.get(game.project))
     }
 
+    /// The version chosen for a project: the channel picked on its page, else the first offered
+    /// (the release first); a release folder's own version when one is given.
     pub fn release(&self, project: &Project) -> Option<Result<Option<Release>, String>> {
-        self.state(project).and_then(|state| state.release.lock().unwrap().clone())
+        let state = self.state(project)?;
+        if matches!(state.source, Source::Folder(_)) {
+            return state.release.lock().unwrap().clone();
+        }
+        self.offered(project).map(|offers| offers.map(|offers| offers.pick(self.channels.get(&project.id).map(String::as_str)).cloned()))
+    }
+
+    /// What the platform offers for a project (None while it is asked).
+    pub fn offered(&self, project: &Project) -> Option<Result<crate::patch::Offers, String>> {
+        self.offers.get(&project.id).and_then(|slot| slot.lock().unwrap().clone())
+    }
+
+    /// Asks the platform which versions every patched game has (again after signing in or out).
+    pub fn load_offers(&mut self, context: &egui::Context) {
+        let token = self.access.session.as_ref().map(|session| session.token.clone());
+        for project in self.catalog.projects.iter().filter(|project| project.game.is_some() || project.series == Series::Retro) {
+            let slot: Slot<Result<crate::patch::Offers, String>> = Arc::default();
+            self.offers.insert(project.id.clone(), slot.clone());
+            let (id, token, context) = (project.id.clone(), token.clone(), context.clone());
+            std::thread::spawn(move || {
+                *slot.lock().unwrap() = Some(crate::patch::offers(&id, token.as_deref()));
+                context.request_repaint();
+            });
+        }
+        self.retro_channel.clear();
+    }
+
+    /// Picks the channel of a project's version (its page's choice).
+    pub fn choose_channel(&mut self, project: &Project, channel: &str) {
+        self.channels.insert(project.id.clone(), channel.to_string());
     }
 
     /// One short line on the patch: what the home and the cards say.
@@ -384,7 +412,8 @@ impl App {
     /// or test patch does not count).
     pub fn patch_public(&self, project: &Project) -> bool {
         // A finished project (the site says so) was published, by the platform or elsewhere.
-        project.status_label.to_lowercase().contains("termin") || (self.state(project).is_some() && matches!(self.release(project), Some(Ok(Some(_)))))
+        project.status_label.to_lowercase().contains("termin")
+            || (self.state(project).is_some() && matches!(self.offered(project), Some(Ok(offers)) if offers.releases.iter().any(|release| release.channel == "release")))
     }
 
     pub fn is_installed(&self, project: &Project) -> bool {
@@ -463,7 +492,13 @@ impl App {
         let project = &self.catalog.projects[index];
         let Some(game) = project.game else { return };
         let Some((folder, _)) = self.games.get(game.project).and_then(|state| state.folder.clone()) else { return };
-        let source = Source::for_game(game);
+        // The version chosen, pinned to its tag (a private one with the account's token).
+        let source = self.games.get(game.project).map(|state| state.source.clone()).unwrap_or_else(|| Source::for_game(game));
+        let token = self.access.session.as_ref().map(|session| session.token.clone());
+        let source = match self.release(project) {
+            Some(Ok(Some(release))) => source.chosen(&release, if release.private { token } else { None }),
+            _ => source,
+        };
         let voices = self.voice_release(project).and_then(Result::ok).flatten();
         let id = project.id.clone();
         self.spawn(context, id, kind, move |progress| match kind {
@@ -505,9 +540,35 @@ impl App {
         self.job = Some(Job { project, shared, kind });
     }
 
-    /// How a retro game's floppies are translated: PatchRetro's recipe (served by the platform).
+    /// How a retro game's floppies are translated: PatchRetro's recipe of the version chosen.
     pub fn recipe(&self, project: &Project) -> Option<crate::retro::Recipe> {
+        let wanted = self.release(project).and_then(Result::ok).flatten().map(|release| release.channel)?;
+        if self.retro_channel.get(&project.id) != Some(&wanted) {
+            return None;
+        }
         self.retro.get(&project.id).and_then(|slot| slot.lock().unwrap().clone())
+    }
+
+    /// Asks for each retro game's recipe in the channel chosen, when it changed.
+    fn sync_recipes(&mut self, context: &egui::Context) {
+        let token = self.access.session.as_ref().map(|session| session.token.clone());
+        let mut asks = Vec::new();
+        for project in self.catalog.projects.iter().filter(|project| project.series == Series::Retro) {
+            let Some(release) = self.offered(project).and_then(Result::ok).and_then(|offers| offers.pick(self.channels.get(&project.id).map(String::as_str)).cloned()) else { continue };
+            if self.retro_channel.get(&project.id) != Some(&release.channel) {
+                asks.push((project.id.clone(), release.channel.clone(), if release.private { token.clone() } else { None }));
+            }
+        }
+        for (id, channel, token) in asks {
+            let slot: Slot<crate::retro::Recipe> = Arc::default();
+            self.retro.insert(id.clone(), slot.clone());
+            self.retro_channel.insert(id.clone(), channel.clone());
+            let context = context.clone();
+            std::thread::spawn(move || {
+                *slot.lock().unwrap() = crate::retro::platform(&id, &channel, token.as_deref());
+                context.request_repaint();
+            });
+        }
     }
 
     pub fn voice_release(&self, project: &Project) -> Option<Result<Option<crate::voices::VoiceRelease>, String>> {
@@ -530,6 +591,11 @@ impl App {
                 }
             }
         }
+        // The site's catalogue may bring games the bundled one lacked: their versions too.
+        if self.catalog.projects.iter().any(|project| (project.game.is_some() || project.series == Series::Retro) && !self.offers.contains_key(&project.id)) {
+            self.load_offers(context);
+        }
+        self.sync_recipes(context);
         self.images.poll(context, self.now);
         let finished = self.job.as_ref().and_then(|job| job.shared.lock().unwrap().finished.take().map(|result| (job.project.clone(), job.kind, result)));
         if let Some((id, kind, result)) = finished {
@@ -557,6 +623,9 @@ impl App {
     }
 
     fn keys(&mut self, context: &egui::Context) {
+        if self.access.open {
+            return;
+        }
         let typing = context.egui_wants_keyboard_input();
         let (left, right, enter, escape, find) = context.input(|input| {
             (
@@ -650,6 +719,7 @@ impl eframe::App for App {
         // The trailer view follows what the page asked for (gone when it asked nothing).
         let request = self.trailer.take();
         self.player.update(frame, &context, request);
+        self.login_dialog(&context);
         if self.moving || self.job.is_some() {
             context.request_repaint();
         }
@@ -1111,10 +1181,14 @@ impl App {
     pub fn installed_label(&self, project: &Project) -> Option<String> {
         let state = self.state(project)?;
         match &state.installed {
-            Installed::Version(build) => Some(match self.release(project) {
-                Some(Ok(Some(release))) if release.build == *build => release.version,
-                _ => build.clone(),
-            }),
+            // The number of whichever offered version this build is (release or test).
+            Installed::Version(build) => Some(
+                self.offered(project)
+                    .and_then(Result::ok)
+                    .and_then(|offers| offers.releases.into_iter().find(|release| release.build == *build).map(|release| release.version))
+                    .or_else(|| self.release(project).and_then(Result::ok).flatten().filter(|release| release.build == *build).map(|release| release.version))
+                    .unwrap_or_else(|| build.clone()),
+            ),
             _ => None,
         }
     }

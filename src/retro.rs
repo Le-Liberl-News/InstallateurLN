@@ -50,6 +50,8 @@ pub struct Recipe {
     /// Served by the platform from PatchRetro: its version, and where its files are.
     pub version: Option<String>,
     pub assets: Option<String>,
+    /// A signed-in account's token, for a private test version's files.
+    pub access_token: Option<String>,
 }
 
 impl Recipe {
@@ -78,7 +80,7 @@ impl Recipe {
             })
             .collect();
         let extras = value.get("extras").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
-        Some(Recipe { method, archive: text("archive"), command: text("command"), builtin: text("builtin"), targets, extras, version: None, assets: None })
+        Some(Recipe { method, archive: text("archive"), command: text("command"), builtin: text("builtin"), targets, extras, version: None, assets: None, access_token: None })
     }
 
     /// Whether this installer can translate the floppies itself here.
@@ -91,14 +93,17 @@ impl Recipe {
     }
 }
 
-/// A game's patch from PatchRetro (patch.php?channel=retro): None while it is not there.
-pub fn platform(game: &str) -> Option<Recipe> {
-    let url = format!("{}?channel=retro&game={game}", patch::API);
-    let text = patch::download_text(&url).ok()?;
+/// A game's patch from PatchRetro, in one channel of the platform (release, public or private
+/// test): None while there is none. The files are pinned to that version.
+pub fn platform(game: &str, channel: &str, token: Option<&str>) -> Option<Recipe> {
+    let url = format!("{}?channel=installer&game={game}&slot={channel}", patch::api());
+    let text = patch::download_text_authorized(&url, token).ok()?;
     let answer: Value = serde_json::from_str(&text).ok()?;
     let mut recipe = Recipe::read(answer.get("recipe")?)?;
     recipe.version = answer.get("version").and_then(Value::as_str).map(str::to_string);
-    recipe.assets = Some(format!("{url}&asset="));
+    let tag = answer.get("tag").and_then(Value::as_str).map(|tag| format!("&tag={tag}")).unwrap_or_default();
+    recipe.assets = Some(format!("{url}{tag}&asset="));
+    recipe.access_token = token.map(str::to_string);
     Some(recipe)
 }
 
@@ -228,7 +233,7 @@ fn run(title: &str, recipe: &Recipe, disks: &[PathBuf], work: &Path, progress: &
         Some(base) => format!("{base}{}", recipe.archive),
         None => archive_url(&recipe.archive),
     };
-    patch::download(&url, &archive, 0, "patch", progress)?;
+    patch::download_authorized(&url, &archive, 0, "patch", progress, recipe.access_token.as_deref())?;
     let unpacked = work.join("patch");
     unzip(&archive, &unpacked)?;
 
@@ -408,6 +413,7 @@ mod tests {
             extras: Vec::new(),
             version: None,
             assets: None,
+            access_token: None,
         };
         assert_eq!(super::expected(&recipe), ["Disquette A", "Disquette B"]);
         let dir = std::env::temp_dir().join("ln-check-test");
@@ -433,7 +439,7 @@ mod online {
     #[test]
     #[ignore]
     fn asteka_from_patchretro() {
-        let recipe = super::platform("asteka").expect("recette d'Asteka sur la plateforme");
+        let recipe = super::platform("asteka", "release", None).expect("recette d'Asteka sur la plateforme");
         assert_eq!(recipe.version.as_deref(), Some("1.0.0"));
         let dir = std::env::temp_dir().join("ln-retro-test");
         let _ = std::fs::remove_dir_all(&dir);
@@ -458,7 +464,7 @@ mod real_floppies {
             let disks: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|entry| entry.path())
                 .filter(|path| path.file_name().unwrap().to_string_lossy().starts_with(prefix) && !path.to_string_lossy().contains("[FR]"))
                 .collect();
-            let recipe = super::platform(game).expect("recette");
+            let recipe = super::platform(game, "release", None).expect("recette");
             let progress = crate::patch::Shared::default();
             let (message, folder) = super::translate(game, &recipe, &disks, &progress).expect(game);
             println!("{game} {} : {message} -> {}", recipe.version.unwrap_or_default(), folder.display());

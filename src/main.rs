@@ -2,6 +2,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
+mod access;
 mod catalog;
 mod detect;
 mod dsretrack;

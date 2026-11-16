@@ -11,14 +11,22 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-pub const API: &str = "https://leliberlnews.fr/plateforme/api/patch.php";
+/// The platform's patch API. LN_PLATFORM: another platform (a local copy of the site) to try it.
+pub fn api() -> String {
+    format!("{}/plateforme/api/patch.php", platform())
+}
+
+pub fn platform() -> String {
+    std::env::var("LN_PLATFORM").map(|url| url.trim_end_matches('/').to_string()).unwrap_or_else(|_| "https://leliberlnews.fr".into())
+}
 const USER_AGENT: &str = "InstallateurLiberlNews";
 
-/// Where the patch comes from: the platform's public release, or (to try a
-/// version before it is designated) a release folder given by LN_PATCH_DIR.
+/// Where the patch comes from: one channel of the platform (release, public test,
+/// private test), pinned to the version chosen; or (to try a version before it is
+/// served) a release folder given by LN_PATCH_DIR.
 #[derive(Clone)]
 pub enum Source {
-    Platform(&'static str),
+    Platform { project: &'static str, channel: String, tag: Option<String>, token: Option<String> },
     Folder(PathBuf),
 }
 
@@ -28,34 +36,90 @@ impl Source {
             Some(folder) if game.project == std::env::var("LN_PATCH_PROJECT").unwrap_or_else(|_| "sky-fc".into()) => {
                 Source::Folder(PathBuf::from(folder))
             }
-            _ => Source::Platform(game.project),
+            _ => Source::Platform { project: game.project, channel: "release".into(), tag: None, token: None },
         }
     }
 
-    fn asset_url(project: &str, name: &str) -> String {
-        format!("{API}?project={project}&channel=release&asset={name}")
+    /// The same source, for one version of one channel (a private one with the account's token).
+    pub fn chosen(&self, release: &Release, token: Option<String>) -> Self {
+        match self {
+            Source::Platform { project, .. } => Source::Platform { project, channel: release.channel.clone(), tag: Some(release.tag.clone()), token },
+            Source::Folder(_) => self.clone(),
+        }
+    }
+
+    fn token(&self) -> Option<&str> {
+        match self {
+            Source::Platform { token, .. } => token.as_deref(),
+            Source::Folder(_) => None,
+        }
+    }
+
+    /// A file of the version (the account's token never goes in the address).
+    fn asset_url(&self, name: &str) -> String {
+        match self {
+            Source::Platform { project, channel, tag, .. } => {
+                let tag = tag.as_ref().map(|tag| format!("&tag={tag}")).unwrap_or_default();
+                format!("{}?channel=installer&game={project}&slot={channel}{tag}&asset={name}", api())
+            }
+            Source::Folder(_) => String::new(),
+        }
     }
 }
 
-/// The release players get.
-#[derive(Clone, Debug)]
+/// One version the platform serves for a game, in one of its channels.
+#[derive(Clone, Debug, Deserialize)]
 pub struct Release {
     /// The version number shown (1.1.0).
     pub version: String,
     /// The version written in patch.json and version.txt (2026.11.13.1053).
+    #[serde(skip)]
     pub build: String,
+    #[serde(default)]
     pub notes: String,
+    #[serde(default)]
     pub size: u64,
+    #[serde(default)]
+    pub tag: String,
+    /// "release", "test" or "private", and its name ("Test publique").
+    #[serde(default = "release_channel")]
+    pub channel: String,
+    #[serde(default)]
+    pub label: String,
+    /// A test version: its disclaimer (warning) is shown next to its number.
+    #[serde(default)]
+    pub test: bool,
+    #[serde(default)]
+    pub private: bool,
+    #[serde(default)]
+    pub warning: String,
+}
+
+fn release_channel() -> String {
+    "release".into()
+}
+
+/// What the platform offers for a game: its versions, and whether a private test
+/// version waits for a sign-in.
+#[derive(Clone, Debug, Default)]
+pub struct Offers {
+    pub releases: Vec<Release>,
+    pub private_available: bool,
+}
+
+impl Offers {
+    /// The version of a channel, else the first offered (the release first).
+    pub fn pick(&self, channel: Option<&str>) -> Option<&Release> {
+        channel.and_then(|channel| self.releases.iter().find(|release| release.channel == channel)).or_else(|| self.releases.first())
+    }
 }
 
 #[derive(Deserialize)]
-struct ApiRelease {
-    version: String,
-    tag: String,
+struct ApiOffers {
     #[serde(default)]
-    notes: String,
+    versions: Vec<Release>,
     #[serde(default)]
-    size: u64,
+    private_available: bool,
 }
 
 #[derive(Deserialize)]
@@ -79,30 +143,48 @@ pub struct PatchFile {
     pub delta_size: u64,
 }
 
-pub fn release(source: &Source) -> Result<Option<Release>, String> {
-    match source {
-        Source::Folder(folder) => {
-            let manifest = read_manifest(&folder.join("patch.json"))?;
-            let size = manifest.files.iter().map(|file| file.delta_size).sum();
-            Ok(Some(Release { version: format!("{} (dossier local)", manifest.version), build: manifest.version, notes: String::new(), size }))
-        }
-        Source::Platform(project) => {
-            let url = format!("{API}?project={project}&channel=release");
-            let response = ureq::get(&url).header("User-Agent", USER_AGENT).config().http_status_as_error(false).build().call().map_err(|error| error.to_string())?;
-            let status = response.status().as_u16();
-            let body = response.into_body().read_to_string().map_err(|error| error.to_string())?;
-            if status == 404 {
-                return Ok(None);
-            }
-            if status != 200 {
-                let message = serde_json::from_str::<ApiError>(&body).map(|error| error.error).unwrap_or(body);
-                return Err(format!("plateforme ({status}) : {message}"));
-            }
-            let api: ApiRelease = serde_json::from_str(&body).map_err(|error| error.to_string())?;
-            let build = api.tag.trim_start_matches('v').to_string();
-            Ok(Some(Release { version: api.version, build, notes: api.notes, size: api.size }))
-        }
+/// The versions a game (or a retro game) has on the platform; `token`: a signed-in account's.
+pub fn offers(project: &str, token: Option<&str>) -> Result<Offers, String> {
+    let url = format!("{}?channel=installer&game={project}&list=1", api());
+    let mut request = ureq::get(&url).header("User-Agent", USER_AGENT);
+    if let Some(token) = token {
+        request = request.header("Authorization", &format!("Bearer {token}"));
     }
+    let response = request.config().http_status_as_error(false).build().call().map_err(|error| error.to_string())?;
+    let status = response.status().as_u16();
+    let body = response.into_body().read_to_string().map_err(|error| error.to_string())?;
+    if status != 200 {
+        let message = serde_json::from_str::<ApiError>(&body).map(|error| error.error).unwrap_or(body);
+        return Err(format!("plateforme ({status}) : {message}"));
+    }
+    let api: ApiOffers = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+    let releases = api
+        .versions
+        .into_iter()
+        .map(|mut release| {
+            release.build = release.tag.trim_start_matches('v').to_string();
+            release
+        })
+        .collect();
+    Ok(Offers { releases, private_available: api.private_available })
+}
+
+/// The version in a release folder (LN_PATCH_DIR).
+pub fn folder_release(folder: &Path) -> Result<Option<Release>, String> {
+    let manifest = read_manifest(&folder.join("patch.json"))?;
+    let size = manifest.files.iter().map(|file| file.delta_size).sum();
+    Ok(Some(Release {
+        version: format!("{} (dossier local)", manifest.version),
+        build: manifest.version,
+        notes: String::new(),
+        size,
+        tag: String::new(),
+        channel: "release".into(),
+        label: "Dossier local".into(),
+        test: false,
+        private: false,
+        warning: String::new(),
+    }))
 }
 
 fn read_manifest(path: &Path) -> Result<Manifest, String> {
@@ -177,8 +259,8 @@ pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -
     report(progress, "Lecture du patch", "", 0, 0);
     let manifest = match source {
         Source::Folder(dir) => read_manifest(&dir.join("patch.json"))?,
-        Source::Platform(project) => {
-            let text = download_text(&Source::asset_url(project, "patch.json"))?;
+        Source::Platform { .. } => {
+            let text = download_text_authorized(&source.asset_url("patch.json"), source.token())?;
             serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|error| error.to_string())?
         }
     };
@@ -249,10 +331,10 @@ fn install_file(folder: &Path, english: &Path, work: &Path, source: &Source, xde
     }
     let delta = match source {
         Source::Folder(dir) => dir.join(&file.delta),
-        Source::Platform(project) => {
+        Source::Platform { .. } => {
             let name = file.delta.rsplit('/').next().unwrap_or(&file.delta);
             let target = work.join(name);
-            download(&Source::asset_url(project, name), &target, file.delta_size, step, progress)?;
+            download_authorized(&source.asset_url(name), &target, file.delta_size, step, progress, source.token())?;
             target
         }
     };
@@ -261,7 +343,7 @@ fn install_file(folder: &Path, english: &Path, work: &Path, source: &Source, xde
     let size = fs::metadata(&saved).map(|meta| meta.len()).unwrap_or(0);
     // Source window covering the whole original (the release's rule).
     let result = apply_delta(xdelta, &saved, &delta, &temporary, size);
-    if matches!(source, Source::Platform(_)) {
+    if !matches!(source, Source::Folder(_)) {
         let _ = fs::remove_file(&delta);
     }
     if let Err(error) = result {
@@ -353,15 +435,21 @@ pub fn sha256(path: &Path) -> String {
     hex::encode(hasher.finalize())
 }
 
-pub fn download_text(url: &str) -> Result<String, String> {
-    let response = ureq::get(url).header("User-Agent", USER_AGENT).call().map_err(|error| format!("téléchargement : {error}"))?;
+pub fn download_text(url: &str) -> Result<String, String> { download_text_authorized(url,None) }
+pub fn download_text_authorized(url: &str, token: Option<&str>) -> Result<String, String> {
+    let mut request=ureq::get(url).header("User-Agent", USER_AGENT);
+    if let Some(token)=token {request=request.header("Authorization",&format!("Bearer {token}"));}
+    let response = request.call().map_err(|error| format!("téléchargement : {error}"))?;
     response.into_body().with_config().limit(64 << 20).read_to_string().map_err(|error| error.to_string())
 }
 
 /// Downloads to `target`: the platform answers with a redirection to a signed
 /// GitHub link (valid a few minutes), followed here.
-pub fn download(url: &str, target: &Path, expected: u64, step: &str, progress: &Shared) -> Result<(), String> {
-    let response = ureq::get(url).header("User-Agent", USER_AGENT).call().map_err(|error| format!("téléchargement : {error}"))?;
+pub fn download(url: &str, target: &Path, expected: u64, step: &str, progress: &Shared) -> Result<(), String> { download_authorized(url,target,expected,step,progress,None) }
+pub fn download_authorized(url: &str, target: &Path, expected: u64, step: &str, progress: &Shared, token: Option<&str>) -> Result<(), String> {
+    let mut request=ureq::get(url).header("User-Agent", USER_AGENT);
+    if let Some(token)=token {request=request.header("Authorization",&format!("Bearer {token}"));}
+    let response = request.call().map_err(|error| format!("téléchargement : {error}"))?;
     let mut reader = response.into_body().into_reader();
     let mut output = File::create(target).map_err(|error| error.to_string())?;
     let mut buffer = vec![0u8; 1 << 16];
@@ -398,4 +486,25 @@ pub fn xdelta3() -> Result<PathBuf, String> {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).map_err(|error| format!("xdelta3 : {error}"))?;
     }
     Ok(path)
+}
+
+#[cfg(test)]
+mod release_selection_tests {
+    use super::*;
+    #[test]
+    fn reads_the_channels_offered() {
+        let api: ApiOffers = serde_json::from_str(r#"{"versions":[{"channel":"release","label":"Release","version":"1.1.0","tag":"v2026.11.13.1053"},{"channel":"test","label":"Test publique","test":true,"version":"1.2.0-test","tag":"v2026.11.16.1200","warning":"Scénario traduit à 60 %."}],"private_available":true}"#).unwrap();
+        let offers = Offers { releases: api.versions, private_available: api.private_available };
+        assert_eq!(offers.pick(None).unwrap().channel, "release");
+        assert!(offers.pick(Some("test")).unwrap().warning.contains("60 %"));
+        assert_eq!(offers.pick(Some("private")).unwrap().channel, "release");
+        assert!(offers.private_available);
+    }
+    #[test]
+    fn tokens_stay_out_of_addresses_and_files_are_pinned() {
+        let source = Source::Platform { project: "sky-sc", channel: "private".into(), tag: Some("v2026.11.16.0200".into()), token: Some("secret-fixture".into()) };
+        let url = source.asset_url("patch.json");
+        assert!(url.contains("slot=private") && url.contains("tag=v2026.11.16.0200") && !url.contains("secret-fixture"));
+        assert_eq!(source.token(), Some("secret-fixture"));
+    }
 }
