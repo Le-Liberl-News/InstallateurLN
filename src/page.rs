@@ -1551,10 +1551,6 @@ fn versions_picker(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &
             app.choose_channel(project, &channel);
         }
     }
-    if offers.private_available && app.access.session.is_none() {
-        ui.add_space(4.0);
-        ui.label(RichText::new("Une version de test privée existe : connectez-vous avec le bouton de compte, en haut à droite.").size(13.0).color(theme.muted));
-    }
     // A test version's disclaimer, as written on the platform, with a warning sign.
     if let Some(warning) = chosen.filter(|release| release.test).map(|release| release.warning.trim().to_string()).filter(|warning| !warning.is_empty()) {
         ui.add_space(8.0);

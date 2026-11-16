@@ -1792,7 +1792,7 @@ impl App {
                     }
                     let tip = match &self.access.session {
                         Some(session) => format!("Connecté : {}", session.username),
-                        None => "Compte de la plateforme (versions de test privées)".to_string(),
+                        None => "Compte".to_string(),
                     };
                     if response.on_hover_text(tip).clicked() {
                         self.open_login();

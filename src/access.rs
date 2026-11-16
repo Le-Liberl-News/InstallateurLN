@@ -129,23 +129,23 @@ impl App {
             let (rect, backdrop) = ui.allocate_exact_size(screen.size(), Sense::click());
             let painter = ui.painter().clone();
             painter.rect_filled(rect, 0.0, alpha(Color32::BLACK, 0.7 * p));
-            let panel = Rect::from_center_size(rect.center(), vec2(520.0, 330.0));
+            let panel = Rect::from_center_size(rect.center(), vec2(520.0, 276.0));
             let shown = Rect::from_min_size(panel.min, vec2(panel.width() * p, panel.height()));
             fill(&painter, &slanted(shown.translate(vec2(8.0, 8.0)), SLANT * 0.3), theme.accent2);
             fill(&painter, &slanted(shown, SLANT * 0.3), theme.surface());
             let text = clamp01((p - 0.5) * 2.0);
             let clip = painter.with_clip_rect(shown);
-            spaced(&clip, panel.min + vec2(36.0, 44.0), "COMPTE DE LA PLATEFORME", &motion::display(26.0), alpha(theme.ink, text), 1.4);
+            spaced(&clip, panel.min + vec2(36.0, 44.0), "COMPTE", &motion::display(26.0), alpha(theme.ink, text), 1.4);
             if let Some(name) = &signed_in {
                 // Signed in: who, and the way out.
                 let galley = clip.layout(
-                    format!("Connecté en tant que {name}. Les versions de test privées sont proposées sur les fiches des jeux qui en ont."),
+                    format!("Connecté : {name}"),
                     motion::body(14.0),
                     alpha(theme.muted, text),
                     panel.width() - 72.0,
                 );
                 clip.galley(panel.min + vec2(36.0, 66.0), galley, theme.muted);
-                let at = panel.min + vec2(36.0, 250.0);
+                let at = panel.min + vec2(36.0, 196.0);
                 if slant_button(ui, &painter, Id::new("logout"), at, "SE DÉCONNECTER", &theme, self.job.is_none(), text, self.now) {
                     leave = true;
                 }
@@ -162,19 +162,12 @@ impl App {
                 }
                 return;
             }
-            let galley = clip.layout(
-                "Pour les versions de test privées, réservées à l'équipe et aux testeurs. Le mot de passe n'est pas enregistré : la connexion est retenue 30 jours.".to_string(),
-                motion::body(14.0),
-                alpha(theme.muted, text),
-                panel.width() - 72.0,
-            );
-            clip.galley(panel.min + vec2(36.0, 66.0), galley, theme.muted);
             let field = |ui: &mut egui::Ui, top: f32, value: &mut String, hint: &str, password: bool| {
                 let area = Rect::from_min_size(panel.min + vec2(36.0, top), vec2(panel.width() - 72.0, 34.0));
                 ui.put(area, egui::TextEdit::singleline(value).hint_text(hint).password(password).font(motion::body(15.0)).margin(vec2(10.0, 7.0)))
             };
-            let account = field(ui, 116.0, &mut self.access.login, "Pseudo ou e-mail", false);
-            let password = field(ui, 160.0, &mut self.access.password, "Mot de passe", true);
+            let account = field(ui, 72.0, &mut self.access.login, "Pseudo ou e-mail", false);
+            let password = field(ui, 116.0, &mut self.access.password, "Mot de passe", true);
             if std::mem::take(&mut self.access.focus) {
                 self.player.release_focus();
                 if self.access.login.is_empty() { account.request_focus() } else { password.request_focus() }
@@ -183,9 +176,9 @@ impl App {
                 submit = true;
             }
             if let Some(error) = &self.access.error {
-                clip.text(panel.min + vec2(36.0, 210.0), egui::Align2::LEFT_TOP, error, motion::body(14.0), alpha(Color32::from_rgb(0xd8, 0x4a, 0x3a), text));
+                clip.text(panel.min + vec2(36.0, 160.0), egui::Align2::LEFT_TOP, error, motion::body(14.0), alpha(Color32::from_rgb(0xd8, 0x4a, 0x3a), text));
             }
-            let at = panel.min + vec2(36.0, 250.0);
+            let at = panel.min + vec2(36.0, 196.0);
             let ready = !self.access.busy && !self.access.login.trim().is_empty() && !self.access.password.is_empty();
             if slant_button(ui, &painter, Id::new("login-yes"), at, if self.access.busy { "CONNEXION…" } else { "SE CONNECTER" }, &theme, ready, text, self.now) {
                 submit = true;

@@ -104,6 +104,7 @@ fn release_channel() -> String {
 #[derive(Clone, Debug, Default)]
 pub struct Offers {
     pub releases: Vec<Release>,
+    #[allow(dead_code)] // said by the platform; nothing shows it for now
     pub private_available: bool,
     /// The account's token was accepted (false once it expired or was revoked).
     pub signed_in: bool,
