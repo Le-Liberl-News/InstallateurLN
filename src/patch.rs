@@ -237,11 +237,15 @@ pub struct Progress {
     pub file: u64,
     pub files: u64,
     pub finished: Option<Result<String, String>>,
+    /// Patch installation has two passes and never resets its overall counter.
+    pub install_fraction: Option<f32>,
+    pub install_phase: Option<&'static str>,
 }
 
 impl Progress {
     /// Overall progress, 0 to 1: whole files done plus the current one's share.
     pub fn fraction(&self) -> f32 {
+        if let Some(value) = self.install_fraction { return value; }
         if self.files == 0 {
             return 0.0;
         }
@@ -254,10 +258,14 @@ pub type Shared = Arc<Mutex<Progress>>;
 
 pub fn report(progress: &Shared, step: impl Into<String>, detail: impl Into<String>, done: u64, total: u64) {
     let mut state = progress.lock().unwrap();
-    state.step = step.into();
+    state.step = state.install_phase.map(str::to_owned).unwrap_or_else(|| step.into());
     state.detail = detail.into();
     state.done = done;
     state.total = total;
+    if let Some(previous) = state.install_fraction {
+        let current = if total > 0 { (done as f32 / total as f32).min(1.0) * 0.8 } else { 0.0 };
+        state.install_fraction = Some(previous.max((state.file as f32 + current) / state.files.max(1) as f32).min(1.0));
+    }
 }
 
 pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -> Result<String, String> {
@@ -290,18 +298,37 @@ pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -
     fs::create_dir_all(&work).map_err(|error| error.to_string())?;
 
     let total = manifest.files.len() as u64;
+    {
+        let mut state = progress.lock().unwrap();
+        state.files = total * 2;
+        state.install_fraction = Some(0.0);
+        state.install_phase = Some("Installation");
+    }
     let mut failures = Vec::new();
     for (index, file) in manifest.files.iter().enumerate() {
         let step = format!("{} ({}/{})", file.file, index + 1, total);
         {
             let mut state = progress.lock().unwrap();
             state.file = index as u64;
-            state.files = total;
         }
         if let Err(error) = install_file(folder, &english, &work, source, &xdelta, file, &step, progress) {
             failures.push(format!("{} : {error}", file.file));
         }
-        report(progress, "Fichiers", step, index as u64 + 1, total);
+        progress.lock().unwrap().file = index as u64 + 1;
+        report(progress, "Installation", step, 0, 0);
+    }
+    // A separate final pass checks all installed files, including those already
+    // up to date. Temporary outputs remain checked before replacement as well.
+    progress.lock().unwrap().install_phase = Some("Vérification");
+    for (index, file) in manifest.files.iter().enumerate() {
+        let step = format!("{} ({}/{})", file.file, index + 1, total);
+        report(progress, "Vérification", &step, 0, 0);
+        if sha256(&folder.join(&file.file)) != file.patched_sha256
+            && !failures.iter().any(|error| error.starts_with(&format!("{} :", file.file))) {
+            failures.push(format!("{} : le fichier installé ne correspond pas", file.file));
+        }
+        progress.lock().unwrap().file = total + index as u64 + 1;
+        report(progress, "Vérification", step, 0, 0);
     }
     let _ = fs::remove_dir_all(&work);
     if failures.is_empty() {
@@ -496,6 +523,40 @@ pub fn xdelta3() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod release_selection_tests {
     use super::*;
+    #[test]
+    fn installation_progress_never_rewinds_between_files_or_phases() {
+        let shared = Shared::default();
+        {
+            let mut state = shared.lock().unwrap();
+            state.files = 4;
+            state.install_fraction = Some(0.0);
+            state.install_phase = Some("Installation");
+        }
+        let mut previous = 0.0;
+        for index in 0..2 {
+            shared.lock().unwrap().file = index;
+            for (label, done, total) in [("Vérification",0,0),("Téléchargement",50,100),("Téléchargement",100,100),("Application",0,0),("Vérification du résultat",0,0)] {
+                report(&shared,label,"file",done,total);
+                let state = shared.lock().unwrap();
+                assert_eq!(state.step,"Installation");
+                assert!(state.fraction() >= previous);
+                assert!(state.fraction() < 0.5);
+                previous = state.fraction();
+            }
+            shared.lock().unwrap().file = index+1;
+            report(&shared,"Installation","file",0,0);
+        }
+        shared.lock().unwrap().install_phase = Some("Vérification");
+        for index in 2..=4 {
+            shared.lock().unwrap().file = index;
+            report(&shared,"Vérification","file",0,0);
+            let state = shared.lock().unwrap();
+            assert_eq!(state.step,"Vérification");
+            assert!(state.fraction() >= previous);
+            previous = state.fraction();
+        }
+        assert_eq!(previous,1.0);
+    }
     #[test]
     fn reads_the_channels_offered() {
         let api: ApiOffers = serde_json::from_str(r#"{"versions":[{"channel":"release","label":"Release","version":"1.1.0","tag":"v2026.11.13.1053"},{"channel":"test","label":"Test publique","test":true,"version":"1.2.0-test","tag":"v2026.11.16.1200","warning":"Scénario traduit à 60 %."}],"private_available":true}"#).unwrap();
