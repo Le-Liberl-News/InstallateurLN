@@ -8,6 +8,21 @@ use serde_json::Value;
 
 pub const SITE: &str = "https://leliberlnews.fr";
 pub const LAUNCHER_URL: &str = "https://leliberlnews.fr/api/launcher.php";
+pub const PROGRESS_URL: &str = "https://leliberlnews.fr/api/progress.php";
+
+#[derive(Clone, serde::Deserialize)]
+pub struct TranslationProgress {
+    pub done: u64,
+    pub total: u64,
+}
+
+pub fn fetch_progress() -> Option<std::collections::HashMap<String, TranslationProgress>> {
+    #[derive(serde::Deserialize)]
+    struct Response { projects: std::collections::HashMap<String, TranslationProgress> }
+    let url = std::env::var("LN_PROGRESS_URL").unwrap_or_else(|_| PROGRESS_URL.into());
+    let text = ureq::get(&url).call().ok()?.into_body().read_to_string().ok()?;
+    Some(serde_json::from_str::<Response>(&text).ok()?.projects)
+}
 pub const DOWNLOADS_URL: &str = "https://leliberlnews.fr/api/downloads.php";
 pub const DISCORD: &str = "https://discord.gg/3jSCpGJDSd";
 pub const X: &str = "https://x.com/SoraNoKisekiFR";

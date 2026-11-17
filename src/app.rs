@@ -135,6 +135,7 @@ pub struct App {
     pub retro_channel: HashMap<String, String>,
     pub catalog: Catalog,
     pub incoming: Slot<Catalog>,
+    pub translation_progress: Slot<HashMap<String, catalog::TranslationProgress>>,
     pub themes: Themes,
     pub images: Images,
     pub games: HashMap<&'static str, GameState>,
@@ -201,6 +202,17 @@ impl App {
         let context = creation.egui_ctx.clone();
         setup_style(&context);
         let incoming: Slot<Catalog> = Arc::default();
+        let translation_progress: Slot<HashMap<String, catalog::TranslationProgress>> = Arc::default();
+        {
+            let (slot, context) = (translation_progress.clone(), context.clone());
+            std::thread::spawn(move || loop {
+                if let Some(progress) = catalog::fetch_progress() {
+                    *slot.lock().unwrap() = Some(progress);
+                    context.request_repaint();
+                }
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            });
+        }
         {
             let (incoming, context) = (incoming.clone(), context.clone());
             std::thread::spawn(move || {
@@ -247,6 +259,7 @@ impl App {
             retro_channel: HashMap::new(),
             catalog,
             incoming,
+            translation_progress,
             themes,
             images: Images::new(),
             games,

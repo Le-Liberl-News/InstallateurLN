@@ -424,6 +424,7 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
             ui.add_space(6.0);
             ui.label(RichText::new(&outcome.text).size(13.0).color(if outcome.ok { mix(theme.accent, theme.ink, 0.4) } else { RED }));
         }
+        translation_progress(app, ui, project, theme);
         related(app, ui, project, theme);
         return;
     };
@@ -497,16 +498,9 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
     }
     motion::shadowed(ui.painter(), rect.left_center(), Align2::LEFT_CENTER, &latest, motion::display(size), theme.accent, alpha(theme.accent2, 0.7), (size / 14.0).max(2.0));
     versions_picker(app, ui, project, theme);
-    let installed_text = match &installed {
-        Installed::Nothing => "aucune (jeu en anglais)".to_string(),
-        Installed::OldPatch => "ancien patch (mis de côté à l'installation)".to_string(),
-        Installed::Version(version) => app.installed_label(project).unwrap_or_else(|| version.clone()),
-    };
+    translation_progress(app, ui, project, theme);
     ui.style_mut().text_styles.insert(egui::TextStyle::Body, motion::body(17.0));
     egui::Grid::new(("facts", &project.id)).num_columns(2).spacing([18.0, 7.0]).show(ui, |ui| {
-        ui.label(RichText::new("Installée").color(theme.muted));
-        ui.label(installed_text);
-        ui.end_row();
         ui.label(RichText::new("Jeu").color(theme.muted));
         ui.label(match &folder {
             Some((_, Store::Steam)) => "trouvé (Steam)",
@@ -514,14 +508,6 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
             Some((_, Store::Manual)) => "dossier choisi",
             None => "introuvable",
         });
-        ui.end_row();
-        if !project.sheet.languages.is_empty() {
-            ui.label(RichText::new("Langues").color(theme.muted));
-            ui.label(&project.sheet.languages);
-            ui.end_row();
-        }
-        ui.label(RichText::new("Compatible").color(theme.muted));
-        ui.label(if game.gog_id != 0 { "PC · Steam, GOG" } else { "PC · Steam" });
         ui.end_row();
         if let Some(count) = project.downloads.filter(|count| *count > 0) {
             ui.label(RichText::new("Téléchargements").color(theme.muted));
@@ -535,6 +521,18 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
         }
     });
     related(app, ui, project, theme);
+}
+
+fn translation_progress(app: &App, ui: &mut egui::Ui, project: &Project, theme: &Theme) {
+    let translation = app.translation_progress.lock().unwrap().as_ref().and_then(|items| items.get(&project.id)).cloned();
+    if let Some(translation) = translation.filter(|value| value.total > 0 && !crate::catalog::fold(&project.status_label).contains("termine")) {
+        ui.add_space(12.0);
+        ui.label(RichText::new("Traduction").color(theme.muted));
+        let fraction = (translation.done as f32 / translation.total as f32).clamp(0.0, 1.0);
+        ui.add(egui::ProgressBar::new(fraction).fill(theme.accent).text(format!("{:.1} %",fraction * 100.0)));
+        ui.label(RichText::new(format!("{} / {}",crate::catalog::grouped(translation.done),crate::catalog::grouped(translation.total))).size(13.0).color(theme.muted));
+        ui.add_space(12.0);
+    }
 }
 
 /// The Japanese voices: installed, to install, or not yet available (SC and the 3rd for now).
@@ -1528,7 +1526,7 @@ fn versions_picker(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &
             ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
             for release in &offers.releases {
                 let on = chosen.as_ref().is_some_and(|chosen| chosen.channel == release.channel);
-                let label = format!("{}  {}", if release.label.is_empty() { release.channel.to_uppercase() } else { release.label.to_uppercase() }, release.version);
+                let label = if release.label.is_empty() { release.channel.to_uppercase() } else { release.label.to_uppercase() };
                 let font = motion::semibold(12.0);
                 let width = motion::width(ui.painter(), &label, &font) + label.chars().count() as f32 * 0.8 + 30.0;
                 let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), if busy { Sense::hover() } else { Sense::click() });
