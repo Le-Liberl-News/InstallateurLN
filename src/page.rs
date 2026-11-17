@@ -379,7 +379,8 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
         }
         ui.add_space(18.0);
         let painter = ui.painter().clone();
-        let recipe = app.recipe(project).filter(crate::retro::Recipe::local);
+        let offered_recipe = app.recipe(project);
+        let recipe = offered_recipe.clone().filter(crate::retro::Recipe::local);
         if let Some(version) = recipe.as_ref().and_then(|recipe| recipe.version.clone()) {
             ui.label(RichText::new(format!("Patch {version}")).color(theme.muted));
             ui.add_space(4.0);
@@ -408,10 +409,19 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
             }
             ui.add_space(8.0);
             ui.label(
-                RichText::new("Choisissez vos images disque (.d88, .t88) : une copie traduite « [FR] » est créée à côté, l'original reste intact.")
+                RichText::new("Disquettes .d88 / .t88 → dossier « Nom du jeu [FR] »")
                     .size(13.0)
                     .color(theme.muted),
             );
+        } else if project.series == crate::catalog::Series::Retro && offered_recipe.is_none() {
+            // A missing/pending recipe must not turn an installer-managed patch
+            // into a website download action.
+            ui.allocate_exact_size(vec2(10.0, 56.0), Sense::hover());
+            let loading = app.offered(project).is_none() || app.release(project).is_some_and(|release| matches!(release, Ok(Some(_)))) && app.retro.get(&project.id).is_none_or(|slot| slot.lock().unwrap().is_none());
+            if slant_button(ui, &painter, Id::new(("recipe-loading", &project.id)), at, if loading { "CHARGEMENT DU PATCH…" } else { "RÉESSAYER" }, theme, !loading, 1.0, app.now) {
+                app.load_offers(ui.ctx());
+            }
+            if !loading { ui.label(RichText::new("Impossible de charger le patch.").color(RED)); }
         } else {
             ui.allocate_exact_size(vec2(10.0, 56.0), Sense::hover());
             if slant_button(ui, &painter, Id::new(("site", &project.id)), at, "VOIR SUR LE SITE", theme, true, 1.0, app.now) {
@@ -528,9 +538,21 @@ fn translation_progress(app: &App, ui: &mut egui::Ui, project: &Project, theme: 
     let translation = app.translation_progress.lock().unwrap().as_ref().and_then(|items| items.get(&project.id)).cloned();
     if let Some(translation) = translation.filter(|value| value.total > 0 && !crate::catalog::fold(&project.status_label).contains("termine")) {
         ui.add_space(12.0);
-        ui.label(RichText::new("Traduction").color(theme.muted));
         let fraction = (translation.done as f32 / translation.total as f32).clamp(0.0, 1.0);
-        ui.add(egui::ProgressBar::new(fraction).fill(theme.accent).text(format!("{:.1} %",fraction * 100.0)));
+        let (header, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+        ui.painter().text(header.left_center(), Align2::LEFT_CENTER, "Traduction", motion::body(15.0), theme.ink);
+        ui.painter().text(header.right_center(), Align2::RIGHT_CENTER, format!("{:.1} %",fraction * 100.0), motion::semibold(18.0), theme.ink);
+        let (track, _) = ui.allocate_exact_size(vec2(ui.available_width(), 12.0), Sense::hover());
+        let shape = slanted(track, 0.35);
+        fill(ui.painter(), &shape, mix(theme.bg, theme.accent, 0.17));
+        if fraction > 0.0 {
+            let filled = Rect::from_min_size(track.min, vec2(track.width() * fraction,track.height()));
+            let shape = slanted(filled, 0.35_f32.min(filled.width() / filled.height()));
+            fill(ui.painter(), &shape, theme.accent);
+            let sheen = Rect::from_min_max(filled.min - vec2(track.height(), 0.0), pos2(filled.max.x + track.height(), filled.min.y + 3.0));
+            fill(&ui.painter().with_clip_rect(sheen), &shape, mix(theme.accent,Color32::WHITE,0.3));
+        }
+        ui.add_space(4.0);
         ui.label(RichText::new(format!("{} / {}",crate::catalog::grouped(translation.done),crate::catalog::grouped(translation.total))).size(13.0).color(theme.muted));
         ui.add_space(12.0);
     }
@@ -1009,6 +1031,7 @@ fn phase_of(step: &str, kind: app::JobKind) -> String {
         return "RETRAIT DES VOIX".into();
     }
     let step = step.to_lowercase();
+    if step.starts_with("reconnexion") { return "RECONNEXION…".into(); }
     if step.starts_with("extraction") {
         return "EXTRACTION DES VOIX".into();
     }
@@ -1085,6 +1108,16 @@ fn gallery(app: &mut App, ui: &mut egui::Ui, project: &Project, items: &[Media],
     }
     let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.15);
     if let Media::Video(id) = &items[current] {
+        if !app.page.as_ref().is_some_and(|page| page.trailer_started) {
+            let play = Rect::from_center_size(view.center(), vec2(108.0,64.0));
+            fill(&painter, &slanted(play, SLANT), Color32::from_black_alpha(210));
+            motion::icon(&painter, Icon::Play, play.center(), 26.0, Color32::WHITE);
+            if response.on_hover_text("Lire la bande-annonce").clicked() {
+                if let Some(page) = app.page.as_mut() { page.trailer_started = true; }
+            }
+            return_strip(app, ui, project, items, theme, current, pixel, &context, view.width());
+            return;
+        }
         // The trailer plays here (video.rs), over its poster; seen only when nothing covers it.
         let page = app.page.as_ref();
         let settled = !app.access.open && page.is_some_and(|page| page.lightbox.is_none() && page.confirm.is_none() && page.floppies.is_none() && app.now - page.opened > 0.9 && app.now - page.tab_changed > 0.35)

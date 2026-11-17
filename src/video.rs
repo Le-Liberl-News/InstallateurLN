@@ -1,6 +1,6 @@
 //! The trailer, played in the page: YouTube's player in a WebView2 view (the
 //! Edge engine Windows already has; nothing is shipped) laid over the
-//! gallery's big view. It starts by itself when the page opens, follows the
+//! gallery's big view. It is created only after a click on the poster, follows the
 //! page as it scrolls (cut where the hero covers it), pauses and hides when it
 //! is out of sight or a dialog covers it, and goes away with the page. Without WebView2, the poster opens YouTube.
 

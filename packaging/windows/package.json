@@ -1,0 +1,11 @@
+{
+  "name": "setupliberlnews",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Installateur des patchs français du Liberl News",
+  "author": "Le Liberl News",
+  "devDependencies": {
+    "electron-builder": "25.1.8",
+    "electron-updater": "6.8.9"
+  }
+}

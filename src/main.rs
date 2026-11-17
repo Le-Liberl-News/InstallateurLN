@@ -72,3 +72,5 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native("Installateur du Liberl News", options, Box::new(|context| Ok(Box::new(app::App::new(context)))))
 }
+#[cfg(test)]
+mod download_tests;

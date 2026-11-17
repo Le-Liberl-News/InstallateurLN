@@ -18,10 +18,27 @@ jobs:
       # The Linux xdelta3 is not used here, but include_bytes! wants the file on Linux only.
       - run: cargo test --release
       - run: cargo build --release
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packaging/windows/package-lock.json
+      - run: npm ci --prefix packaging/windows
+      - name: Compatible Setup for legacy Electron updates
+        run: node scripts/package-windows.cjs
+      - name: Check the legacy update bridge without installing it
+        run: node scripts/test-windows-bridge.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: windows
           path: target/release/InstallateurLiberlNews.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup
+          path: |
+            target/windows-setup/Installateur-du-Liberl-News-Setup-*.exe
+            target/windows-setup/Installateur-du-Liberl-News-Setup-*.exe.blockmap
+            target/windows-setup/latest.yml
 
   linux:
     # An older Ubuntu: its C library is older than SteamOS's, so the binary runs there.
@@ -59,4 +76,6 @@ jobs:
         run: |
           chmod +x linux/InstallateurLiberlNews-linux
           gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "Installateur ${GITHUB_REF_NAME}" \
-            windows/InstallateurLiberlNews.exe linux/InstallateurLiberlNews-linux
+            windows/InstallateurLiberlNews.exe linux/InstallateurLiberlNews-linux \
+            windows-setup/Installateur-du-Liberl-News-Setup-*.exe \
+            windows-setup/Installateur-du-Liberl-News-Setup-*.exe.blockmap windows-setup/latest.yml

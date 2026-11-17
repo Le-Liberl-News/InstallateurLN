@@ -1,3 +1,4 @@
 target/
 captures/
 assets/xdelta3-linux
+packaging/windows/node_modules/

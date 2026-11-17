@@ -412,7 +412,9 @@ pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -
     for (index, file) in manifest.files.iter().enumerate() {
         let step = format!("{} ({}/{})", file.file, index + 1, total);
         report(progress, "Vérification", &step, 0, 0);
+        let started = std::time::Instant::now();
         let installed_sha = sha256(&folder.join(&file.file));
+        record_timing(&file.file, "vérification finale", started.elapsed());
         if installed_sha != file.patched_sha256 {
             failures.push(format!("{} : le fichier installé ne correspond pas", file.file));
         }
@@ -434,14 +436,18 @@ fn prepare_file(folder: &Path, english: &Path, work: &Path, source: &Source, xde
     let destination = folder.join(&file.file);
     let saved = english.join(&file.file);
     report(progress, "Vérification", step, 0, 0);
+    let started = std::time::Instant::now();
     let current = sha256(&destination);
+    record_timing(&file.file, "contrôle du fichier installé", started.elapsed());
     // Already this version's French file: nothing to do.
     if current == file.patched_sha256 {
         return Ok(None);
     }
     // The English original: in dat_en already, or the game's file while it
     // is still English (copied to dat_en once).
+    let started = std::time::Instant::now();
     let saved_sha = sha256(&saved);
+    record_timing(&file.file, "contrôle de l’original anglais", started.elapsed());
     if saved_sha != file.original_sha256 {
         if current != file.original_sha256 {
             return Err("fichier anglais d'origine introuvable (ni dans dat_en, ni dans le jeu)".into());
@@ -457,7 +463,9 @@ fn prepare_file(folder: &Path, english: &Path, work: &Path, source: &Source, xde
         Source::Platform { .. } => {
             let name = file.delta.rsplit('/').next().unwrap_or(&file.delta);
             let target = work.join(name);
+            let started = std::time::Instant::now();
             let result = download_authorized(&source.asset_url(name), &target, file.delta_size, step, progress, source.token());
+            record_timing(&file.file, "téléchargement", started.elapsed());
             result?;
             target
         }
@@ -467,7 +475,9 @@ fn prepare_file(folder: &Path, english: &Path, work: &Path, source: &Source, xde
     let temporary = destination.with_file_name(format!("{file_name}.fr.tmp"));
     let size = fs::metadata(&saved).map(|meta| meta.len()).unwrap_or(0);
     // Source window covering the whole original (the release's rule).
+    let started = std::time::Instant::now();
     let result = apply_delta(xdelta, &saved, &delta, &temporary, size);
+    record_timing(&file.file, "application xdelta", started.elapsed());
     if !matches!(source, Source::Folder(_)) {
         let _ = fs::remove_file(&delta);
     }
@@ -476,12 +486,21 @@ fn prepare_file(folder: &Path, english: &Path, work: &Path, source: &Source, xde
         return Err(error);
     }
     report(progress, "Vérification du résultat", step, 0, 0);
+    let started = std::time::Instant::now();
     let result_sha = sha256(&temporary);
+    record_timing(&file.file, "contrôle du résultat xdelta", started.elapsed());
     if result_sha != file.patched_sha256 {
         let _ = fs::remove_file(&temporary);
         return Err("le fichier français obtenu ne correspond pas".into());
     }
     Ok(Some(temporary))
+}
+
+fn record_timing(file: &str,stage: &str,elapsed: std::time::Duration) {
+    if let Ok(mut log)=fs::OpenOptions::new().create(true).append(true).open(data_dir().join("installation-timings.log")) {
+        let time=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let _=writeln!(log,"{time}\t{file}\t{stage}\t{} ms",elapsed.as_millis());
+    }
 }
 
 /// Puts the English originals (dat_en) back in the game.
@@ -573,13 +592,35 @@ pub fn download_text_authorized(url: &str, token: Option<&str>) -> Result<String
 /// GitHub link (valid a few minutes), followed here.
 pub fn download(url: &str, target: &Path, expected: u64, step: &str, progress: &Shared) -> Result<(), String> { download_authorized(url,target,expected,step,progress,None) }
 pub fn download_authorized(url: &str, target: &Path, expected: u64, step: &str, progress: &Shared, token: Option<&str>) -> Result<(), String> {
-    let mut request=ureq::get(url).header("User-Agent", USER_AGENT);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(20)))
+        .timeout_per_read(Some(std::time::Duration::from_secs(30)))
+        .build().into();
+    let partial = target.with_file_name(format!("{}.part", target.file_name().unwrap_or_default().to_string_lossy()));
+    // Reuse bytes only within this call: a later release may use the same filename.
+    File::create(&partial).map_err(|error| error.to_string())?;
+    let mut validator: Option<String> = None;
+    let mut error = String::new();
+    for attempt in 0..3 {
+        let offset = fs::metadata(&partial).map(|meta| meta.len()).unwrap_or(0);
+        let result = (|| -> Result<(), String> {
+    let mut request=agent.get(url).header("User-Agent", USER_AGENT).header("Accept-Encoding", "identity");
     if let Some(token)=token {request=request.header("Authorization",&format!("Bearer {token}"));}
+    if offset > 0 {
+        request=request.header("Range",&format!("bytes={offset}-"));
+        if let Some(etag)=validator.as_deref() { request=request.header("If-Range",etag); }
+    }
     let response = request.call().map_err(|error| format!("téléchargement : {error}"))?;
+    let resumed=response.status().as_u16()==206;
+    if resumed {
+        let range=response.headers().get("content-range").and_then(|value|value.to_str().ok()).unwrap_or("");
+        if !range.starts_with(&format!("bytes {offset}-")) { return Err("Réponse de reprise incohérente.".into()); }
+    }
+    validator=response.headers().get("etag").and_then(|value|value.to_str().ok()).filter(|value| !value.starts_with("W/")).map(str::to_owned);
     let mut reader = response.into_body().into_reader();
-    let mut output = File::create(target).map_err(|error| error.to_string())?;
+    let mut output = fs::OpenOptions::new().write(true).append(resumed).truncate(!resumed).open(&partial).map_err(|error| error.to_string())?;
     let mut buffer = vec![0u8; 1 << 16];
-    let mut done = 0u64;
+    let mut done = if resumed { offset } else { 0 };
     loop {
         // Stopped from the window (Annuler, or closed): the download ends here.
         if cancelled(progress) { return Err(CANCELLED.into()); }
@@ -591,7 +632,21 @@ pub fn download_authorized(url: &str, target: &Path, expected: u64, step: &str, 
         done += read as u64;
         report(progress, "Téléchargement", step, done, expected.max(done));
     }
-    Ok(())
+    if expected > 0 && done != expected { return Err(format!("Téléchargement incomplet : {done}/{expected} octets.")); }
+    output.flush().map_err(|error|error.to_string())?;
+    drop(output);
+    // Windows cannot rename over an existing archive.
+    if target.exists() { fs::remove_file(target).map_err(|error|error.to_string())?; }
+    fs::rename(&partial,target).map_err(|error|error.to_string())
+        })();
+        match result { Ok(())=>return Ok(()), Err(failure)=>error=failure }
+        if cancelled(progress) { let _ = fs::remove_file(&partial); return Err(CANCELLED.into()); }
+        if attempt < 2 {
+            report(progress,"Reconnexion",step,offset,expected);
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
+    Err(format!("{error} Après 3 tentatives. Réessayez l’installation."))
 }
 
 /// xdelta3, shipped inside the executable and written once in the installer's

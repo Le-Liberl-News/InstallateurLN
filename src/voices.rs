@@ -92,30 +92,27 @@ pub fn install(game: &Game, folder: &Path, voices: &VoiceRelease, progress: &Sha
         }
         Ok(archive)
     };
-    // The next zip downloads while the current one is unpacked.
-    std::thread::scope(|scope| -> Result<(), String> {
-        let mut pending: Option<std::thread::ScopedJoinHandle<Result<std::path::PathBuf, String>>> = None;
+    // Each transfer reports to the visible job. No hidden prefetch stuck at 50%.
+    {
+        let mut state = progress.lock().unwrap();
+        state.files = count * 2;
+        state.install_fraction = Some(0.0);
+    }
         for (index, file) in voices.files.iter().enumerate() {
             {
                 let mut state = progress.lock().unwrap();
-                state.file = index as u64;
-                state.files = count;
+                state.file = index as u64 * 2;
             }
             let step = format!("{} ({}/{})", file.name, index + 1, count);
-            let archive = match pending.take() {
-                Some(handle) => handle.join().map_err(|_| "téléchargement interrompu".to_string())??,
-                None => fetch(file, &step, progress)?,
-            };
-            if let Some(next) = voices.files.get(index + 1) {
-                let silent: Shared = Default::default();
-                let fetch = &fetch;
-                pending = Some(scope.spawn(move || fetch(next, &next.name, &silent)));
-            }
+            let archive = fetch(file, &step, progress)?;
+            progress.lock().unwrap().file = index as u64 * 2 + 1;
+            patch::report(progress, "Extraction", &step, 0, 0);
             extract(&archive, folder, &step, progress)?;
-            let _ = fs::remove_file(&archive);
+            progress.lock().unwrap().file = index as u64 * 2 + 2;
+            patch::report(progress, "Extraction", &step, 0, 0);
         }
-        Ok(())
-    })?;
+    // Retain complete checked archives if another part fails, for the next try.
+    for file in &voices.files { let _ = fs::remove_file(work.join(&file.name)); }
     fs::write(folder.join("voice").join(VERSION_FILE), format!("{}\n", voices.version)).map_err(|error| error.to_string())?;
     #[cfg_attr(windows, allow(unused_mut))]
     let mut message = format!("Voix {} installées.", voices.version);

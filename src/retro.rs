@@ -9,8 +9,8 @@
 //!   Windows only), run on each floppy.
 //! - "link": not hosted for the installer yet; the project's page.
 //!
-//! The player's dump is never overwritten: "<name> [FR].d88" is written next to
-//! it, with the manuals and notes in a "<game> [FR]" folder.
+//! The player's dump is never overwritten: translated floppies, manuals and
+//! fonts are grouped in a "<game> [FR]" folder beside the first input floppy.
 
 use crate::patch::{self, Shared};
 use serde_json::Value;
@@ -227,6 +227,9 @@ pub fn translate(title: &str, recipe: &Recipe, disks: &[PathBuf], progress: &Sha
 }
 
 fn run(title: &str, recipe: &Recipe, disks: &[PathBuf], work: &Path, progress: &Shared) -> Result<(String, PathBuf), String> {
+    let first=disks.first().ok_or("Aucune disquette sélectionnée.")?;
+    let safe_title:String=title.chars().map(|c|if c.is_control() || "<>:\"/\\|?*".contains(c) {'_'}else{c}).collect();
+    let shown=first.parent().unwrap_or(Path::new(".")).join(format!("{} [FR]",safe_title.trim_end_matches([' ','.'])));
     patch::report(progress, "Téléchargement", "patch", 0, 0);
     let archive = work.join("patch.zip");
     let url = match &recipe.assets {
@@ -278,7 +281,8 @@ fn run(title: &str, recipe: &Recipe, disks: &[PathBuf], work: &Path, progress: &
                     }
                 }
                 if matched > 0 {
-                    let target = output_name(disk);
+                    fs::create_dir_all(&shown).map_err(|error|error.to_string())?;
+                    let target = shown.join(output_name(disk).file_name().ok_or("Nom de disquette invalide.")?);
                     fs::write(&target, output).map_err(|error| format!("{} : {error}", target.display()))?;
                     translated.push(target);
                 }
@@ -286,18 +290,25 @@ fn run(title: &str, recipe: &Recipe, disks: &[PathBuf], work: &Path, progress: &
             Method::Exec if recipe.builtin == "dsretrack" => {
                 // Dragon Slayer's patcher, built in: the archive brings its text lists.
                 let lists = find_file(&unpacked, "dragon_slayer_orig.json").and_then(|path| path.parent().map(Path::to_path_buf)).ok_or("listes de textes absentes de l'archive")?;
-                match crate::dsretrack::translate(disk, &lists) {
-                    Ok(path) => translated.push(path),
+                let input_folder=work.join(format!("input-{index}"));
+                fs::create_dir_all(&input_folder).map_err(|error|error.to_string())?;
+                let input=input_folder.join(disk.file_name().ok_or("Nom de disquette invalide.")?);
+                fs::copy(disk,&input).map_err(|error|error.to_string())?;
+                match crate::dsretrack::translate(&input, &lists) {
+                    Ok(path) => translated.push(group_result(&path,&shown)?),
                     Err(error) => unknown.push(format!("{name} : {error}")),
                 }
             }
             Method::Exec => {
-                // The patcher writes its result next to the floppy: what appears there is it.
-                let folder = disk.parent().map(Path::to_path_buf).unwrap_or_default();
+                // External patchers run on a working copy, never beside the original.
+                let folder = work.join(format!("input-{index}"));
+                fs::create_dir_all(&folder).map_err(|error|error.to_string())?;
+                let input=folder.join(disk.file_name().ok_or("Nom de disquette invalide.")?);
+                fs::copy(disk,&input).map_err(|error|error.to_string())?;
                 let before: Vec<_> = fs::read_dir(&folder).map(|entries| entries.flatten().map(|entry| entry.file_name()).collect()).unwrap_or_default();
                 let patcher = unpacked.join(&recipe.command);
                 let mut command = std::process::Command::new(&patcher);
-                command.arg(disk).current_dir(patcher.parent().unwrap_or(&unpacked));
+                command.arg(&input).current_dir(patcher.parent().unwrap_or(&unpacked));
                 #[cfg(windows)]
                 {
                     use std::os::windows::process::CommandExt;
@@ -308,7 +319,7 @@ fn run(title: &str, recipe: &Recipe, disks: &[PathBuf], work: &Path, progress: &
                     .map(|entries| entries.flatten().filter(|entry| !before.contains(&entry.file_name())).map(|entry| entry.path()).collect())
                     .unwrap_or_default();
                 match created.into_iter().next() {
-                    Some(path) => translated.push(path),
+                    Some(path) => translated.push(group_result(&path,&shown)?),
                     None => unknown.push(format!("{name} : version non reconnue par le patcheur")),
                 }
             }
@@ -321,19 +332,14 @@ fn run(title: &str, recipe: &Recipe, disks: &[PathBuf], work: &Path, progress: &
             unknown.join("\n")
         ));
     }
-    // The manuals and notes, next to the player's floppies.
-    let base = disks[0].parent().map(Path::to_path_buf).unwrap_or_default();
-    let mut shown = base.clone();
     if !recipe.extras.is_empty() {
-        let extras = base.join(format!("{title} [FR]"));
-        fs::create_dir_all(&extras).map_err(|error| error.to_string())?;
+        fs::create_dir_all(&shown).map_err(|error| error.to_string())?;
         for extra in &recipe.extras {
             let source = unpacked.join(extra);
             if let Some(name) = source.file_name() {
-                let _ = fs::copy(&source, extras.join(name));
+                fs::copy(&source, shown.join(name)).map_err(|error|format!("{} : {error}",source.display()))?;
             }
         }
-        shown = extras;
     }
     let mut message = format!("{} disquette(s) traduite(s) : {}.", translated.len(), translated.iter().filter_map(|path| path.file_name()).map(|name| name.to_string_lossy().to_string()).collect::<Vec<_>>().join(", "));
     if !labels.is_empty() {
@@ -343,6 +349,13 @@ fn run(title: &str, recipe: &Recipe, disks: &[PathBuf], work: &Path, progress: &
         message.push_str(&format!(" Non reconnue(s) : {}.", unknown.join(" ; ")));
     }
     Ok((message, shown))
+}
+
+fn group_result(path: &Path, folder: &Path) -> Result<PathBuf,String> {
+    fs::create_dir_all(folder).map_err(|error|error.to_string())?;
+    let target=folder.join(path.file_name().ok_or("Nom de disquette invalide.")?);
+    fs::copy(path,&target).map_err(|error|format!("{} : {error}",target.display()))?;
+    Ok(target)
 }
 
 /// A file somewhere under `root`.
@@ -397,6 +410,26 @@ mod tests {
         assert_eq!(pieces[1].len(), 0x500);
         let odd = vec![0u8; 0x300];
         assert_eq!(split_d88(&odd).len(), 1);
+    }
+
+    /// The panel's ticks: a pack file ticks the floppies it holds, an unknown one is named by its SHA-1.
+    #[test]
+    fn groups_outputs_with_extras_without_changing_the_source() {
+        let root=std::env::temp_dir().join(format!("ln-retro-group-{}",std::process::id()));
+        let work=root.join("work");
+        let folder=root.join("Demon's Ring [FR]");
+        std::fs::create_dir_all(&work).unwrap();
+        let original=root.join("disk.d88");
+        std::fs::write(&original,b"original floppy").unwrap();
+        let patched=work.join("disk [FR].d88");
+        std::fs::write(&patched,b"translated floppy").unwrap();
+        let output=super::group_result(&patched,&folder).unwrap();
+        std::fs::write(folder.join("font.rom"),b"font").unwrap();
+        assert_eq!(output.parent(),Some(folder.as_path()));
+        assert_eq!(std::fs::read(output).unwrap(),b"translated floppy");
+        assert_eq!(std::fs::read(original).unwrap(),b"original floppy");
+        assert!(!root.join("disk [FR].d88").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// The panel's ticks: a pack file ticks the floppies it holds, an unknown one is named by its SHA-1.

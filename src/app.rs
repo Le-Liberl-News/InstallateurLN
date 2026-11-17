@@ -89,6 +89,7 @@ pub struct Page {
     pub gallery: usize,
     pub gallery_previous: usize,
     pub gallery_changed: f64,
+    pub trailer_started: bool,
     pub lightbox: Option<f64>,
     pub lightbox_from: Rect,
     pub confirm: Option<f64>,
@@ -147,7 +148,7 @@ pub struct App {
     pub games: HashMap<&'static str, GameState>,
     pub voices: HashMap<&'static str, Slot<Result<Option<crate::voices::VoiceRelease>, String>>>,
     /// The retro games' patches PatchRetro serves (asked for at start).
-    pub retro: HashMap<String, Slot<crate::retro::Recipe>>,
+    pub retro: HashMap<String, Slot<Result<crate::retro::Recipe, String>>>,
     pub reviews: HashMap<String, Slot<Reviews>>,
     pub mode: Mode,
     pub mode_changed: f64,
@@ -257,7 +258,7 @@ impl App {
             .collect();
         let themes = Themes::load();
         let catalog = catalog::bundled();
-        let retro: HashMap<String, Slot<crate::retro::Recipe>> = HashMap::new();
+        let retro: HashMap<String, Slot<Result<crate::retro::Recipe, String>>> = HashMap::new();
         let from_theme = themes.of(catalog.projects.first().map(|project| project.id.as_str()).unwrap_or("default"));
         let mut app = App {
             close_after_job: false,
@@ -381,11 +382,7 @@ impl App {
     /// The version chosen for a project: the channel picked on its page, else the first offered
     /// (the release first); a release folder's own version when one is given.
     pub fn release(&self, project: &Project) -> Option<Result<Option<Release>, String>> {
-        let state = self.state(project)?;
-        if matches!(state.source, Source::Folder(_)) {
-            return state.release.lock().unwrap().clone();
-        }
-        self.offered(project).map(|offers| offers.map(|offers| offers.pick(self.channels.get(&project.id).map(String::as_str)).cloned()))
+        selected_release(self.state(project), self.offered(project), self.channels.get(&project.id).map(String::as_str))
     }
 
     /// What the platform offers for a project (None while it is asked).
@@ -486,6 +483,7 @@ impl App {
             lightbox_from: Rect::NOTHING,
             confirm: None,
             composer: false,
+            trailer_started: false,
             draft: String::new(),
             rating: 0,
             author: String::new(),
@@ -568,7 +566,7 @@ impl App {
         if self.retro_channel.get(&project.id) != Some(&wanted) {
             return None;
         }
-        self.retro.get(&project.id).and_then(|slot| slot.lock().unwrap().clone())
+        self.retro.get(&project.id).and_then(|slot| slot.lock().unwrap().clone()).and_then(Result::ok)
     }
 
     /// Asks for each retro game's recipe in the channel chosen, when it changed.
@@ -582,12 +580,12 @@ impl App {
             }
         }
         for (id, channel, token) in asks {
-            let slot: Slot<crate::retro::Recipe> = Arc::default();
+            let slot: Slot<Result<crate::retro::Recipe, String>> = Arc::default();
             self.retro.insert(id.clone(), slot.clone());
             self.retro_channel.insert(id.clone(), channel.clone());
             let context = context.clone();
             std::thread::spawn(move || {
-                *slot.lock().unwrap() = crate::retro::platform(&id, &channel, token.as_deref());
+                *slot.lock().unwrap() = Some(crate::retro::platform(&id, &channel, token.as_deref()).ok_or_else(|| "Recette du patch indisponible.".into()));
                 context.request_repaint();
             });
         }
@@ -707,6 +705,27 @@ impl App {
             self.query.clear();
             self.grid_changed = self.now;
         }
+    }
+}
+
+fn selected_release(state: Option<&GameState>, offers: Option<Result<crate::patch::Offers, String>>, channel: Option<&str>) -> Option<Result<Option<Release>, String>> {
+    if let Some(state) = state.filter(|state| matches!(state.source, Source::Folder(_))) {
+        return state.release.lock().unwrap().clone();
+    }
+    offers.map(|offers| offers.map(|offers| offers.pick(channel).cloned()))
+}
+
+#[cfg(test)]
+mod retro_release_tests {
+    use super::*;
+    #[test]
+    fn a_floppy_patch_does_not_require_an_installed_pc_game() {
+        let release: Release = serde_json::from_str(r#"{"version":"1.0.0","tag":"asteka-1.0.0","channel":"release"}"#).unwrap();
+        let offers = crate::patch::Offers { releases: vec![release], ..Default::default() };
+        let selected = selected_release(None, Some(Ok(offers)), None).unwrap().unwrap().unwrap();
+        assert_eq!(selected.tag,"asteka-1.0.0");
+        assert!(selected_release(None,None,None).is_none());
+        assert!(selected_release(None,Some(Err("unavailable".into())),None).unwrap().is_err());
     }
 }
 
@@ -1200,6 +1219,9 @@ impl App {
             if self.recipe(project).is_some_and(|recipe| recipe.local()) {
                 return ("PATCHER MON JEU".into(), if self.job.is_none() { HomeAction::Floppies } else { HomeAction::Page });
             }
+            if project.series == Series::Retro {
+                return ("OUVRIR LA FICHE".into(), HomeAction::Page);
+            }
             return if project.status_label.to_lowercase().contains("termin") {
                 ("TÉLÉCHARGER LE PATCH".into(), HomeAction::Site)
             } else {
@@ -1407,9 +1429,13 @@ impl App {
             }
             if self.job.as_ref().is_some_and(|job| job.project == project.id) {
                 let spin = (self.now as f32 * 4.0) % std::f32::consts::TAU;
+                let center = rect.right_top() + vec2(-19.0, 19.0);
+                clip.circle_filled(center + vec2(0.0, 1.0), 14.0, Color32::from_black_alpha(80));
+                clip.circle_filled(center, 13.0, Color32::from_rgb(20, 26, 38));
+                clip.circle_stroke(center, 9.0, Stroke::new(2.0, Color32::from_white_alpha(65)));
                 clip.add(egui::Shape::line(
-                    (0..16).map(|k| rect.right_top() + vec2(-14.0, 14.0) + Vec2::angled(spin + k as f32 * 0.3) * 7.0).collect(),
-                    Stroke::new(2.0, card_theme.accent),
+                    (0..16).map(|k| center + Vec2::angled(spin + k as f32 * 0.3) * 9.0).collect(),
+                    Stroke::new(2.8, Color32::WHITE),
                 ));
             } else if self.is_installed(project) {
                 clip.circle_filled(rect.right_top() + vec2(-12.0, 12.0), 4.5, card_theme.accent);
