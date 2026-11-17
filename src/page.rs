@@ -463,6 +463,7 @@ fn action_panel(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &The
             if detect::is_game(game, &chosen) {
                 if let Some(state) = app.games.get_mut(game.project) {
                     state.installed = patch::installed(game, &chosen);
+                    state.interrupted = patch::interrupted(&chosen);
                     state.folder = Some((chosen, Store::Manual));
                 }
                 app.outcomes.remove(&project.id);
@@ -826,9 +827,16 @@ fn install_control(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &
     let state = app.games.get(game.project);
     let installed = state.map(|state| state.installed.clone()).unwrap_or(Installed::Nothing);
     let has_folder = state.is_some_and(|state| state.folder.is_some());
+    let interrupted = state.is_some_and(|state| state.interrupted);
     let ours = app.job.as_ref().filter(|job| job.project == project.id).map(|job| {
         let progress = job.shared.lock().unwrap();
-        (progress.step.clone(), progress.detail.clone(), progress.fraction(), job.kind)
+        let step = if progress.cancel { "Annulation".to_string() } else { progress.step.clone() };
+        (step, progress.detail.clone(), progress.fraction(), job.kind)
+    });
+    // Whether the running installation can still stop with the game untouched.
+    let stoppable = app.job.as_ref().filter(|job| job.project == project.id && job.kind == app::JobKind::Install).is_some_and(|job| {
+        let progress = job.shared.lock().unwrap();
+        progress.cancellable && !progress.cancel
     });
     let other = app.job.is_some() && ours.is_none();
     let outcome = app.outcomes.get(&project.id).map(|outcome| (outcome.ok, outcome.text.clone(), outcome.at, outcome.kind));
@@ -849,6 +857,8 @@ fn install_control(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &
         ("INSTALLATION EN COURS", false, Some("Une autre installation est en cours.".into()))
     } else if !has_folder {
         ("JEU INTROUVABLE", false, Some("Indiquez le dossier du jeu avec l'icône du dossier.".into()))
+    } else if interrupted {
+        ("RÉPARER", true, Some("Installation interrompue.".into()))
     } else if up_to_date {
         ("JOUER", true, None)
     } else {
@@ -912,7 +922,7 @@ fn install_control(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &
             Some((step, detail, _, kind)) => (phase_of(step, *kind), detail.clone()),
             None => (
                 match outcome.as_ref().map(|(.., kind)| *kind) {
-                    Some(app::JobKind::Uninstall) => "JEU REMIS EN ANGLAIS",
+                    Some(app::JobKind::Uninstall) | Some(app::JobKind::Repair) => "JEU REMIS EN ANGLAIS",
                     Some(app::JobKind::Voices) => "VOIX INSTALLÉES",
                     Some(app::JobKind::RemoveVoices) => "VOIX RETIRÉES",
                     Some(app::JobKind::Floppies) => "DISQUETTES TRADUITES",
@@ -964,11 +974,21 @@ fn install_control(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &
         let index = app.page.as_ref().map(|page| page.project).unwrap_or(0);
         if label == "JOUER" {
             play(app, project);
+        } else if label == "RÉPARER" {
+            app.start(ui.ctx(), index, app::JobKind::Repair);
         } else {
             app.start(ui.ctx(), index, app::JobKind::Install);
         }
     }
     ui.add_space(18.0);
+    if stoppable {
+        ui.add_space(4.0);
+        if link(ui, "Annuler", theme.muted).clicked() {
+            if let Some(job) = &app.job {
+                job.shared.lock().unwrap().cancel = true;
+            }
+        }
+    }
     if let Some(hint) = hint.filter(|_| ours.is_none() && !celebrating) {
         ui.label(RichText::new(hint).size(13.0).color(theme.muted));
     }
@@ -979,8 +999,11 @@ fn install_control(app: &mut App, ui: &mut egui::Ui, project: &Project, theme: &
 
 /// What the job is doing, in one word for the eye.
 fn phase_of(step: &str, kind: app::JobKind) -> String {
-    if kind == app::JobKind::Uninstall {
-        return "DÉSINSTALLATION".into();
+    if step == "Annulation" {
+        return "ANNULATION".into();
+    }
+    if kind == app::JobKind::Uninstall || kind == app::JobKind::Repair {
+        return if kind == app::JobKind::Repair { "RÉPARATION".into() } else { "DÉSINSTALLATION".into() };
     }
     if kind == app::JobKind::RemoveVoices {
         return "RETRAIT DES VOIX".into();

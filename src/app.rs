@@ -44,6 +44,8 @@ pub struct GameState {
     pub folder: Option<(PathBuf, Store)>,
     pub installed: Installed,
     pub release: Slot<Result<Option<Release>, String>>,
+    /// An installation stopped half-way left the game mixing French and English (patch::interrupted).
+    pub interrupted: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -106,6 +108,8 @@ pub struct Page {
 pub enum JobKind {
     Install,
     Uninstall,
+    /// A game left half-patched put back in English.
+    Repair,
     Voices,
     RemoveVoices,
     Floppies,
@@ -126,6 +130,8 @@ pub struct Outcome {
 }
 
 pub struct App {
+    /// The window was closed during a job: it closes once the job has stopped.
+    pub close_after_job: bool,
     /// The platform account signed in from the installer (private test versions).
     pub access: crate::access::Access,
     /// Per project: the versions the platform offers (patch::offers), and the channel chosen.
@@ -227,12 +233,13 @@ impl App {
             .map(|game| {
                 let folder = detect::find(game);
                 let installed = folder.as_ref().map(|(path, _)| patch::installed(game, path)).unwrap_or(Installed::Nothing);
+                let interrupted = folder.as_ref().is_some_and(|(path, _)| patch::interrupted(path));
                 let release: Slot<Result<Option<Release>, String>> = Arc::default();
                 let source = Source::for_game(game);
                 if let Source::Folder(folder) = &source {
                     *release.lock().unwrap() = Some(patch::folder_release(folder));
                 }
-                (game.project, GameState { folder, installed, release, source })
+                (game.project, GameState { folder, installed, release, source, interrupted })
             })
             .collect();
         let voices = crate::games::GAMES
@@ -253,6 +260,7 @@ impl App {
         let retro: HashMap<String, Slot<crate::retro::Recipe>> = HashMap::new();
         let from_theme = themes.of(catalog.projects.first().map(|project| project.id.as_str()).unwrap_or("default"));
         let mut app = App {
+            close_after_job: false,
             access: crate::access::Access::remembered(),
             offers: HashMap::new(),
             channels: HashMap::new(),
@@ -517,6 +525,7 @@ impl App {
         self.spawn(context, id, kind, move |progress| match kind {
             JobKind::Install => patch::install(game, &folder, &source, progress),
             JobKind::Uninstall => patch::uninstall(&folder, progress),
+            JobKind::Repair => patch::repair(&folder, progress),
             JobKind::Voices => match &voices {
                 Some(voices) => crate::voices::install(game, &folder, voices, progress),
                 None => Err("Les voix de ce jeu ne sont pas encore disponibles.".into()),
@@ -623,6 +632,7 @@ impl App {
                 if let Some(state) = self.games.get_mut(game.project) {
                     if let Some((folder, _)) = &state.folder {
                         state.installed = patch::installed(game, folder);
+                        state.interrupted = patch::interrupted(folder);
                     }
                 }
             }
@@ -630,6 +640,10 @@ impl App {
                 Ok(text) => (true, text),
                 Err(text) => (false, text),
             };
+            // A cancelled installation is no failure: the button simply comes back.
+            if !ok && text == patch::CANCELLED {
+                return;
+            }
             // A patch put on a game counts as one download on the site (api/downloads.php).
             if ok && matches!(kind, JobKind::Install | JobKind::Floppies) {
                 if let Some(project) = self.catalog.projects.iter_mut().find(|project| project.id == id) {
@@ -705,6 +719,18 @@ impl eframe::App for App {
         self.trailer = None;
         self.poll(&context);
         self.keys(&context);
+        // Closing during an installation: it stops first (the game untouched, or its files swapped in, a moment),
+        // then the window closes.
+        if context.input(|input| input.viewport().close_requested()) {
+            if let Some(job) = &self.job {
+                context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                job.shared.lock().unwrap().cancel = true;
+                self.close_after_job = true;
+            }
+        }
+        if self.close_after_job && self.job.is_none() {
+            context.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         if self.catalog.projects.is_empty() {
             return;
         }

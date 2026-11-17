@@ -240,6 +240,10 @@ pub struct Progress {
     /// Patch installation has two passes and never resets its overall counter.
     pub install_fraction: Option<f32>,
     pub install_phase: Option<&'static str>,
+    /// The window asked to stop (Annuler, or closing it): honoured while the game is still untouched.
+    pub cancel: bool,
+    /// Whether stopping is still possible (the French files are being prepared aside).
+    pub cancellable: bool,
 }
 
 impl Progress {
@@ -268,8 +272,50 @@ pub fn report(progress: &Shared, step: impl Into<String>, detail: impl Into<Stri
     }
 }
 
+/// What an installation that stopped half-way leaves: the journal of the files being swapped in.
+const JOURNAL: &str = "patch-en-cours.txt";
+pub const CANCELLED: &str = "Installation annulée : le jeu n'a pas été modifié.";
+
+fn cancelled(progress: &Shared) -> bool {
+    progress.lock().unwrap().cancel
+}
+
+/// An installation stopped while it swapped the files in (its journal is still there), or French files
+/// left aside (an older installer stopped mid-way): the game may mix French and English archives.
+pub fn interrupted(folder: &Path) -> bool {
+    folder.join(JOURNAL).exists()
+        || fs::read_dir(folder).map(|entries| entries.flatten().any(|entry| entry.file_name().to_string_lossy().ends_with(".fr.tmp"))).unwrap_or(false)
+}
+
+/// Puts a half-patched game back in English, as a whole (an archive's .dir and .dat must come from the same
+/// version), and removes what the stopped installation left.
+pub fn repair(folder: &Path, progress: &Shared) -> Result<String, String> {
+    if folder.join("dat_en").is_dir() {
+        uninstall(folder, progress)?;
+    }
+    remove_leftovers(folder);
+    let _ = fs::remove_file(folder.join(JOURNAL));
+    Ok("Le jeu est de nouveau en anglais.".into())
+}
+
+fn remove_leftovers(folder: &Path) {
+    if let Ok(entries) = fs::read_dir(folder) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().ends_with(".fr.tmp") {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+/// Installs a release without ever leaving the game half-patched: every French file is first made aside
+/// (verified, next to its target), the game untouched — stopping then only drops them —, then all are swapped
+/// in together, the journal kept until the last one (a stop during the swap is repaired at the next launch).
 pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -> Result<String, String> {
     report(progress, "Lecture du patch", "", 0, 0);
+    if interrupted(folder) {
+        repair(folder, progress)?;
+    }
     let manifest = match source {
         Source::Folder(dir) => read_manifest(&dir.join("patch.json"))?,
         Source::Platform { .. } => {
@@ -278,19 +324,6 @@ pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -
         }
     };
     let xdelta = xdelta3()?;
-
-    // The old patch (a DLL translating at launch, reading data_fr) is moved
-    // aside: the game now reads the French files in place.
-    if installed(game, folder) == Installed::OldPatch {
-        let aside = folder.join("ancien_patch");
-        fs::create_dir_all(&aside).map_err(|error| error.to_string())?;
-        for item in game.old_patch {
-            let path = folder.join(item);
-            if path.exists() {
-                fs::rename(&path, aside.join(item)).map_err(|error| format!("ancien patch, {item} : {error}"))?;
-            }
-        }
-    }
 
     let english = folder.join("dat_en");
     fs::create_dir_all(&english).map_err(|error| error.to_string())?;
@@ -303,62 +336,120 @@ pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -
         state.files = total * 2;
         state.install_fraction = Some(0.0);
         state.install_phase = Some("Installation");
+        state.cancellable = true;
     }
+    // 1. The French files, made aside.
+    let mut prepared: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut failures = Vec::new();
-    for (index, file) in manifest.files.iter().enumerate() {
-        let step = format!("{} ({}/{})", file.file, index + 1, total);
-        {
-            let mut state = progress.lock().unwrap();
-            state.file = index as u64;
+    let drop_prepared = |prepared: &[(PathBuf, PathBuf)]| {
+        for (temporary, _) in prepared {
+            let _ = fs::remove_file(temporary);
         }
-        if let Err(error) = install_file(folder, &english, &work, source, &xdelta, file, &step, progress) {
-            failures.push(format!("{} : {error}", file.file));
+    };
+    for (index, file) in manifest.files.iter().enumerate() {
+        if cancelled(progress) {
+            drop_prepared(&prepared);
+            let _ = fs::remove_dir_all(&work);
+            return Err(CANCELLED.into());
+        }
+        let step = format!("{} ({}/{})", file.file, index + 1, total);
+        progress.lock().unwrap().file = index as u64;
+        match prepare_file(folder, &english, &work, source, &xdelta, file, &step, progress) {
+            Ok(Some(temporary)) => prepared.push((temporary, folder.join(&file.file))),
+            Ok(None) => {}
+            Err(error) => failures.push(format!("{} : {error}", file.file)),
         }
         progress.lock().unwrap().file = index as u64 + 1;
         report(progress, "Installation", step, 0, 0);
     }
-    // A separate final pass checks all installed files, including those already
-    // up to date. Temporary outputs remain checked before replacement as well.
+    let _ = fs::remove_dir_all(&work);
+    if cancelled(progress) {
+        drop_prepared(&prepared);
+        return Err(CANCELLED.into());
+    }
+    if !failures.is_empty() {
+        drop_prepared(&prepared);
+        return Err(format!(
+            "Fichiers non patchés (le jeu n'a pas été modifié) :\n{}\n\nVérifiez l'intégrité des fichiers du jeu (Steam : Propriétés > Fichiers installés > Vérifier), puis réessayez.",
+            failures.join("\n")
+        ));
+    }
+
+    // Old patch moved aside (a DLL translating at launch, reading data_fr): the game now reads the
+    // French files in place. Done only now, once the new files are ready.
+    if installed(game, folder) == Installed::OldPatch {
+        let aside = folder.join("ancien_patch");
+        fs::create_dir_all(&aside).map_err(|error| error.to_string())?;
+        for item in game.old_patch {
+            let path = folder.join(item);
+            if path.exists() {
+                fs::rename(&path, aside.join(item)).map_err(|error| format!("ancien patch, {item} : {error}"))?;
+            }
+        }
+    }
+
+    // 2. All swapped in at once (renames: a moment), under the journal.
+    {
+        let mut state = progress.lock().unwrap();
+        state.cancellable = false;
+        state.install_phase = Some("Installation");
+    }
+    let names: Vec<String> = prepared.iter().map(|(_, destination)| destination.strip_prefix(folder).unwrap_or(destination).display().to_string()).collect();
+    fs::write(folder.join(JOURNAL), names.join("\n")).map_err(|error| error.to_string())?;
+    let _ = fs::remove_file(folder.join("version.txt"));
+    for (temporary, destination) in &prepared {
+        if let Err(error) = fs::rename(temporary, destination) {
+            // A file the system refuses (the game running?): back to English as a whole, never mixed.
+            let name = destination.strip_prefix(folder).unwrap_or(destination).display().to_string();
+            drop_prepared(&prepared);
+            let _ = repair(folder, progress);
+            return Err(format!("{name} : {error}\n\nLe jeu a été remis en anglais. Fermez le jeu s'il est ouvert, puis réessayez."));
+        }
+    }
+
+    // 3. Every installed file checked, those already up to date included.
     progress.lock().unwrap().install_phase = Some("Vérification");
     for (index, file) in manifest.files.iter().enumerate() {
         let step = format!("{} ({}/{})", file.file, index + 1, total);
         report(progress, "Vérification", &step, 0, 0);
-        if sha256(&folder.join(&file.file)) != file.patched_sha256
-            && !failures.iter().any(|error| error.starts_with(&format!("{} :", file.file))) {
+        let installed_sha = sha256(&folder.join(&file.file));
+        if installed_sha != file.patched_sha256 {
             failures.push(format!("{} : le fichier installé ne correspond pas", file.file));
         }
         progress.lock().unwrap().file = total + index as u64 + 1;
         report(progress, "Vérification", step, 0, 0);
     }
-    let _ = fs::remove_dir_all(&work);
-    if failures.is_empty() {
-        fs::write(folder.join("version.txt"), format!("{}\n", manifest.version)).map_err(|error| error.to_string())?;
-        Ok(format!("Patch {} installé.", manifest.version))
-    } else {
-        Err(format!(
-            "Fichiers non patchés :\n{}\n\nVérifiez l'intégrité des fichiers du jeu (Steam : Propriétés > Fichiers installés > Vérifier), puis réessayez.",
-            failures.join("\n")
-        ))
+    if !failures.is_empty() {
+        let _ = repair(folder, progress);
+        return Err(format!("Fichiers non conformes après installation (le jeu a été remis en anglais) :\n{}", failures.join("\n")));
     }
+    fs::write(folder.join("version.txt"), format!("{}\n", manifest.version)).map_err(|error| error.to_string())?;
+    let _ = fs::remove_file(folder.join(JOURNAL));
+    Ok(format!("Patch {} installé.", manifest.version))
 }
 
+/// One file's French version, made and verified next to its target (None: already this version's).
 #[allow(clippy::too_many_arguments)]
-fn install_file(folder: &Path, english: &Path, work: &Path, source: &Source, xdelta: &Path, file: &PatchFile, step: &str, progress: &Shared) -> Result<(), String> {
+fn prepare_file(folder: &Path, english: &Path, work: &Path, source: &Source, xdelta: &Path, file: &PatchFile, step: &str, progress: &Shared) -> Result<Option<PathBuf>, String> {
     let destination = folder.join(&file.file);
     let saved = english.join(&file.file);
     report(progress, "Vérification", step, 0, 0);
     let current = sha256(&destination);
     // Already this version's French file: nothing to do.
     if current == file.patched_sha256 {
-        return Ok(());
+        return Ok(None);
     }
     // The English original: in dat_en already, or the game's file while it
     // is still English (copied to dat_en once).
-    if sha256(&saved) != file.original_sha256 {
+    let saved_sha = sha256(&saved);
+    if saved_sha != file.original_sha256 {
         if current != file.original_sha256 {
             return Err("fichier anglais d'origine introuvable (ni dans dat_en, ni dans le jeu)".into());
         }
         report(progress, "Sauvegarde de l'anglais", step, 0, 0);
+        if let Some(parent) = saved.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
         fs::copy(&destination, &saved).map_err(|error| error.to_string())?;
     }
     let delta = match source {
@@ -366,12 +457,14 @@ fn install_file(folder: &Path, english: &Path, work: &Path, source: &Source, xde
         Source::Platform { .. } => {
             let name = file.delta.rsplit('/').next().unwrap_or(&file.delta);
             let target = work.join(name);
-            download_authorized(&source.asset_url(name), &target, file.delta_size, step, progress, source.token())?;
+            let result = download_authorized(&source.asset_url(name), &target, file.delta_size, step, progress, source.token());
+            result?;
             target
         }
     };
     report(progress, "Application", step, 0, 0);
-    let temporary = destination.with_file_name(format!("{}.fr.tmp", file.file));
+    let file_name = destination.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_else(|| file.file.clone());
+    let temporary = destination.with_file_name(format!("{file_name}.fr.tmp"));
     let size = fs::metadata(&saved).map(|meta| meta.len()).unwrap_or(0);
     // Source window covering the whole original (the release's rule).
     let result = apply_delta(xdelta, &saved, &delta, &temporary, size);
@@ -383,11 +476,12 @@ fn install_file(folder: &Path, english: &Path, work: &Path, source: &Source, xde
         return Err(error);
     }
     report(progress, "Vérification du résultat", step, 0, 0);
-    if sha256(&temporary) != file.patched_sha256 {
+    let result_sha = sha256(&temporary);
+    if result_sha != file.patched_sha256 {
         let _ = fs::remove_file(&temporary);
         return Err("le fichier français obtenu ne correspond pas".into());
     }
-    fs::rename(&temporary, &destination).map_err(|error| error.to_string())
+    Ok(Some(temporary))
 }
 
 /// Puts the English originals (dat_en) back in the game.
@@ -487,6 +581,8 @@ pub fn download_authorized(url: &str, target: &Path, expected: u64, step: &str, 
     let mut buffer = vec![0u8; 1 << 16];
     let mut done = 0u64;
     loop {
+        // Stopped from the window (Annuler, or closed): the download ends here.
+        if cancelled(progress) { return Err(CANCELLED.into()); }
         let read = reader.read(&mut buffer).map_err(|error| format!("téléchargement : {error}"))?;
         if read == 0 {
             break;
