@@ -146,6 +146,35 @@ pub struct PatchFile {
     pub delta: String,
     #[serde(default)]
     pub delta_size: u64,
+    /// The same file for other versions of the game (an older build, another store's): each its own English
+    /// original, French result and delta.
+    #[serde(default)]
+    pub variants: Vec<Variant>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct Variant {
+    pub original_sha256: String,
+    pub patched_sha256: String,
+    pub delta: String,
+    #[serde(default)]
+    pub delta_size: u64,
+}
+
+impl PatchFile {
+    /// The version the patch is made for, then the others.
+    fn candidates(&self) -> Vec<PatchFile> {
+        let main = PatchFile { variants: Vec::new(), ..self.clone() };
+        let others = self.variants.iter().map(|variant| PatchFile {
+            file: self.file.clone(),
+            original_sha256: variant.original_sha256.clone(),
+            patched_sha256: variant.patched_sha256.clone(),
+            delta: variant.delta.clone(),
+            delta_size: variant.delta_size,
+            variants: Vec::new(),
+        });
+        std::iter::once(main).chain(others).collect()
+    }
 }
 
 /// The versions a game (or a retro game) has on the platform; `token`: a signed-in account's.
@@ -341,7 +370,9 @@ pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -
     // 0. Every game file recognised before anything is downloaded: this version's French file, the English
     // original of the version the patch is made for, or that original kept in dat_en. Anything else (another
     // store's version, a file changed by a mod) is named at once.
+    // Each file is resolved to the version of the player's game (its own original, result and delta).
     let mut checks = Vec::new();
+    let mut files = Vec::new();
     let mut unknown = Vec::new();
     for (index, file) in manifest.files.iter().enumerate() {
         if cancelled(progress) {
@@ -349,11 +380,13 @@ pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -
         }
         let step = format!("{} ({}/{})", file.file, index + 1, total);
         report(progress, "Contrôle du jeu", &step, 0, 0);
-        let check = check_file(folder, &english, file);
-        if !check.recognised(file) {
-            unknown.push(file.file.clone());
+        match check_file(folder, &english, file) {
+            Some((check, resolved)) => {
+                checks.push(check);
+                files.push(resolved);
+            }
+            None => unknown.push(file.file.clone()),
         }
-        checks.push(check);
         progress.lock().unwrap().file = index as u64 + 1;
         report(progress, "Contrôle du jeu", step, 0, 0);
     }
@@ -369,7 +402,7 @@ pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -
             let _ = fs::remove_file(temporary);
         }
     };
-    for (index, file) in manifest.files.iter().enumerate() {
+    for (index, file) in files.iter().enumerate() {
         if cancelled(progress) {
             drop_prepared(&prepared);
             let _ = fs::remove_dir_all(&work);
@@ -432,7 +465,7 @@ pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -
 
     // 3. Every installed file checked, those already up to date included.
     progress.lock().unwrap().install_phase = Some("Vérification");
-    for (index, file) in manifest.files.iter().enumerate() {
+    for (index, file) in files.iter().enumerate() {
         let step = format!("{} ({}/{})", file.file, index + 1, total);
         report(progress, "Vérification", &step, 0, 0);
         let started = std::time::Instant::now();
@@ -459,40 +492,33 @@ struct FileCheck {
     saved: String,
 }
 
-impl FileCheck {
-    fn recognised(&self, file: &PatchFile) -> bool {
-        self.current == file.patched_sha256 || self.current == file.original_sha256 || self.saved == file.original_sha256
-    }
-}
-
-fn check_file(folder: &Path, english: &Path, file: &PatchFile) -> FileCheck {
+/// The file's version in the player's game: the one whose French file or English original is there, or whose
+/// original is kept in dat_en. None: a version the patch does not know.
+fn check_file(folder: &Path, english: &Path, file: &PatchFile) -> Option<(FileCheck, PatchFile)> {
+    let candidates = file.candidates();
     let started = std::time::Instant::now();
     let current = sha256(&folder.join(&file.file));
     record_timing(&file.file, "contrôle du fichier installé", started.elapsed());
-    // The kept original is read only when the game's own file is not already one of the two expected ones.
-    let saved = if current == file.patched_sha256 || current == file.original_sha256 {
-        String::new()
-    } else {
-        let started = std::time::Instant::now();
-        let saved = sha256(&english.join(&file.file));
-        record_timing(&file.file, "contrôle de l’original anglais", started.elapsed());
-        saved
-    };
-    FileCheck { current, saved }
+    if let Some(found) = candidates.iter().find(|candidate| current == candidate.patched_sha256 || current == candidate.original_sha256) {
+        return Some((FileCheck { current, saved: String::new() }, found.clone()));
+    }
+    let started = std::time::Instant::now();
+    let saved = sha256(&english.join(&file.file));
+    record_timing(&file.file, "contrôle de l’original anglais", started.elapsed());
+    let found = candidates.into_iter().find(|candidate| saved == candidate.original_sha256)?;
+    Some((FileCheck { current, saved }, found))
 }
 
-/// The game files that are neither the version the patch is made for nor its French files.
+/// The game files of a version the patch does not know.
 fn unknown_files_message(files: &[String]) -> String {
+    let list = files.iter().map(|name| format!("• {name}")).collect::<Vec<_>>().join("
+");
     format!(
-        "Version du jeu non reconnue (le jeu n'a pas été modifié).
+        "Version du jeu non prise en charge (le jeu n'a pas été modifié) :
+{list}
 
-Ces fichiers ne sont pas ceux de la version Steam, pour laquelle le patch est fait :
-{}
-
-Version Steam : vérifiez l'intégrité des fichiers (Propriétés > Fichiers installés > Vérifier), puis réessayez.
-Autre version (GOG, Humble…) : pas encore prise en charge, signalez-la sur le Discord avec ces noms de fichiers.",
-        files.iter().map(|name| format!("• {name}")).collect::<Vec<_>>().join("
-")
+         Mettez le jeu à jour, puis réessayez : Steam le fait tout seul (en cas de doute, Propriétés > Fichiers          installés > Vérifier) ; une version sans DRM (GOG, Humble…) se retélécharge depuis la boutique.
+         Si le message revient, signalez-le sur le Discord avec ces noms de fichiers."
     )
 }
 

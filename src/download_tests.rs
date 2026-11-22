@@ -59,8 +59,42 @@ fn unrecognised_game_files_are_named_before_anything_is_downloaded() {
     std::fs::write(kit.join("patch.json"), manifest).unwrap();
     let game = crate::games::GAMES.iter().find(|game| game.project == "sky-fc").unwrap();
     let error = patch::install(game, &folder, &patch::Source::Folder(kit), &Default::default()).unwrap_err();
-    assert!(error.starts_with("Version du jeu non reconnue"), "{error}");
+    assert!(error.starts_with("Version du jeu non prise en charge"), "{error}");
     assert!(error.contains("• ed6_win.exe") && !error.contains("ED6_DT01.dat"), "{error}");
     assert_eq!(std::fs::read(folder.join("ed6_win.exe")).unwrap(), b"another store's exe");
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+#[test]
+fn the_version_of_the_players_game_is_picked_among_the_variants() {
+    let folder = std::env::temp_dir().join(format!("ln-variant-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    let kit = folder.join("kit");
+    std::fs::create_dir_all(kit.join("deltas")).unwrap();
+    let xdelta = patch::xdelta3().unwrap();
+    let make = |name: &str, english: &[u8], french: &[u8]| {
+        let (source, target) = (folder.join(format!("{name}.en")), folder.join(format!("{name}.fr")));
+        std::fs::write(&source, english).unwrap();
+        std::fs::write(&target, french).unwrap();
+        let delta = kit.join("deltas").join(format!("{name}.xdelta"));
+        let status = std::process::Command::new(&xdelta).arg("-e").arg("-f").arg("-s").arg(&source).arg(&target).arg(&delta).status().unwrap();
+        assert!(status.success());
+        (patch::sha256(&source), patch::sha256(&target))
+    };
+    let (steam, steam_fr) = make("steam", b"steam exe, september 2022", b"exe steam, septembre 2022");
+    let (old, old_fr) = make("old", b"older exe, july 2021", b"ancien exe, juillet 2021");
+    std::fs::write(folder.join("ed6_win.exe"), b"older exe, july 2021").unwrap();
+    let manifest = format!(
+        r#"{{"version":"test","files":[{{"file":"ed6_win.exe","original_sha256":"{steam}","patched_sha256":"{steam_fr}","delta":"deltas/steam.xdelta","variants":[{{"version":"2021-07","original_sha256":"{old}","patched_sha256":"{old_fr}","delta":"deltas/old.xdelta"}}]}}]}}"#
+    );
+    std::fs::write(kit.join("patch.json"), manifest).unwrap();
+    let game = crate::games::GAMES.iter().find(|game| game.project == "sky-fc").unwrap();
+    let source = patch::Source::Folder(kit);
+    patch::install(game, &folder, &source, &Default::default()).unwrap();
+    assert_eq!(std::fs::read(folder.join("ed6_win.exe")).unwrap(), b"ancien exe, juillet 2021");
+    assert_eq!(std::fs::read(folder.join("dat_en").join("ed6_win.exe")).unwrap(), b"older exe, july 2021");
+    // Installed again: already this version's French file.
+    patch::install(game, &folder, &source, &Default::default()).unwrap();
+    assert_eq!(std::fs::read(folder.join("ed6_win.exe")).unwrap(), b"ancien exe, juillet 2021");
     let _ = std::fs::remove_dir_all(&folder);
 }
