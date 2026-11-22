@@ -333,11 +333,34 @@ pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -
     let total = manifest.files.len() as u64;
     {
         let mut state = progress.lock().unwrap();
-        state.files = total * 2;
+        state.files = total * 3;
         state.install_fraction = Some(0.0);
-        state.install_phase = Some("Installation");
+        state.install_phase = Some("Contrôle du jeu");
         state.cancellable = true;
     }
+    // 0. Every game file recognised before anything is downloaded: this version's French file, the English
+    // original of the version the patch is made for, or that original kept in dat_en. Anything else (another
+    // store's version, a file changed by a mod) is named at once.
+    let mut checks = Vec::new();
+    let mut unknown = Vec::new();
+    for (index, file) in manifest.files.iter().enumerate() {
+        if cancelled(progress) {
+            return Err(CANCELLED.into());
+        }
+        let step = format!("{} ({}/{})", file.file, index + 1, total);
+        report(progress, "Contrôle du jeu", &step, 0, 0);
+        let check = check_file(folder, &english, file);
+        if !check.recognised(file) {
+            unknown.push(file.file.clone());
+        }
+        checks.push(check);
+        progress.lock().unwrap().file = index as u64 + 1;
+        report(progress, "Contrôle du jeu", step, 0, 0);
+    }
+    if !unknown.is_empty() {
+        return Err(unknown_files_message(&unknown));
+    }
+    progress.lock().unwrap().install_phase = Some("Installation");
     // 1. The French files, made aside.
     let mut prepared: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut failures = Vec::new();
@@ -353,13 +376,13 @@ pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -
             return Err(CANCELLED.into());
         }
         let step = format!("{} ({}/{})", file.file, index + 1, total);
-        progress.lock().unwrap().file = index as u64;
-        match prepare_file(folder, &english, &work, source, &xdelta, file, &step, progress) {
+        progress.lock().unwrap().file = total + index as u64;
+        match prepare_file(folder, &english, &work, source, &xdelta, file, &checks[index], &step, progress) {
             Ok(Some(temporary)) => prepared.push((temporary, folder.join(&file.file))),
             Ok(None) => {}
             Err(error) => failures.push(format!("{} : {error}", file.file)),
         }
-        progress.lock().unwrap().file = index as u64 + 1;
+        progress.lock().unwrap().file = total + index as u64 + 1;
         report(progress, "Installation", step, 0, 0);
     }
     let _ = fs::remove_dir_all(&work);
@@ -418,7 +441,7 @@ pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -
         if installed_sha != file.patched_sha256 {
             failures.push(format!("{} : le fichier installé ne correspond pas", file.file));
         }
-        progress.lock().unwrap().file = total + index as u64 + 1;
+        progress.lock().unwrap().file = 2 * total + index as u64 + 1;
         report(progress, "Vérification", step, 0, 0);
     }
     if !failures.is_empty() {
@@ -430,26 +453,62 @@ pub fn install(game: &Game, folder: &Path, source: &Source, progress: &Shared) -
     Ok(format!("Patch {} installé.", manifest.version))
 }
 
+/// A game file's fingerprints, read once before anything is downloaded.
+struct FileCheck {
+    current: String,
+    saved: String,
+}
+
+impl FileCheck {
+    fn recognised(&self, file: &PatchFile) -> bool {
+        self.current == file.patched_sha256 || self.current == file.original_sha256 || self.saved == file.original_sha256
+    }
+}
+
+fn check_file(folder: &Path, english: &Path, file: &PatchFile) -> FileCheck {
+    let started = std::time::Instant::now();
+    let current = sha256(&folder.join(&file.file));
+    record_timing(&file.file, "contrôle du fichier installé", started.elapsed());
+    // The kept original is read only when the game's own file is not already one of the two expected ones.
+    let saved = if current == file.patched_sha256 || current == file.original_sha256 {
+        String::new()
+    } else {
+        let started = std::time::Instant::now();
+        let saved = sha256(&english.join(&file.file));
+        record_timing(&file.file, "contrôle de l’original anglais", started.elapsed());
+        saved
+    };
+    FileCheck { current, saved }
+}
+
+/// The game files that are neither the version the patch is made for nor its French files.
+fn unknown_files_message(files: &[String]) -> String {
+    format!(
+        "Version du jeu non reconnue (le jeu n'a pas été modifié).
+
+Ces fichiers ne sont pas ceux de la version Steam, pour laquelle le patch est fait :
+{}
+
+Version Steam : vérifiez l'intégrité des fichiers (Propriétés > Fichiers installés > Vérifier), puis réessayez.
+Autre version (GOG, Humble…) : pas encore prise en charge, signalez-la sur le Discord avec ces noms de fichiers.",
+        files.iter().map(|name| format!("• {name}")).collect::<Vec<_>>().join("
+")
+    )
+}
+
 /// One file's French version, made and verified next to its target (None: already this version's).
 #[allow(clippy::too_many_arguments)]
-fn prepare_file(folder: &Path, english: &Path, work: &Path, source: &Source, xdelta: &Path, file: &PatchFile, step: &str, progress: &Shared) -> Result<Option<PathBuf>, String> {
+fn prepare_file(folder: &Path, english: &Path, work: &Path, source: &Source, xdelta: &Path, file: &PatchFile, check: &FileCheck, step: &str, progress: &Shared) -> Result<Option<PathBuf>, String> {
     let destination = folder.join(&file.file);
     let saved = english.join(&file.file);
-    report(progress, "Vérification", step, 0, 0);
-    let started = std::time::Instant::now();
-    let current = sha256(&destination);
-    record_timing(&file.file, "contrôle du fichier installé", started.elapsed());
     // Already this version's French file: nothing to do.
-    if current == file.patched_sha256 {
+    if check.current == file.patched_sha256 {
         return Ok(None);
     }
     // The English original: in dat_en already, or the game's file while it
     // is still English (copied to dat_en once).
-    let started = std::time::Instant::now();
-    let saved_sha = sha256(&saved);
-    record_timing(&file.file, "contrôle de l’original anglais", started.elapsed());
-    if saved_sha != file.original_sha256 {
-        if current != file.original_sha256 {
+    if check.saved != file.original_sha256 {
+        if check.current != file.original_sha256 {
             return Err("fichier anglais d'origine introuvable (ni dans dat_en, ni dans le jeu)".into());
         }
         report(progress, "Sauvegarde de l'anglais", step, 0, 0);

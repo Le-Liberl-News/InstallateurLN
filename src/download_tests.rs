@@ -42,3 +42,25 @@ fn interrupted_transfer_resumes_and_handles_servers_ignoring_ranges() {
         std::fs::remove_dir_all(folder).unwrap();
     }
 }
+
+#[test]
+fn unrecognised_game_files_are_named_before_anything_is_downloaded() {
+    let folder = std::env::temp_dir().join(format!("ln-unknown-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    let kit = folder.join("kit");
+    std::fs::create_dir_all(&kit).unwrap();
+    std::fs::write(folder.join("ed6_win.exe"), b"another store's exe").unwrap();
+    std::fs::write(folder.join("ED6_DT01.dat"), b"steam").unwrap();
+    let steam = patch::sha256(&folder.join("ED6_DT01.dat"));
+    let manifest = format!(
+        r#"{{"version":"test","files":[{{"file":"ed6_win.exe","original_sha256":"{0}0","patched_sha256":"{0}1","delta":"missing-a.vcdiff"}},{{"file":"ED6_DT01.dat","original_sha256":"{steam}","patched_sha256":"{0}2","delta":"missing-b.vcdiff"}}]}}"#,
+        "f".repeat(63)
+    );
+    std::fs::write(kit.join("patch.json"), manifest).unwrap();
+    let game = crate::games::GAMES.iter().find(|game| game.project == "sky-fc").unwrap();
+    let error = patch::install(game, &folder, &patch::Source::Folder(kit), &Default::default()).unwrap_err();
+    assert!(error.starts_with("Version du jeu non reconnue"), "{error}");
+    assert!(error.contains("• ed6_win.exe") && !error.contains("ED6_DT01.dat"), "{error}");
+    assert_eq!(std::fs::read(folder.join("ed6_win.exe")).unwrap(), b"another store's exe");
+    let _ = std::fs::remove_dir_all(&folder);
+}
