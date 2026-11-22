@@ -1761,7 +1761,7 @@ dependencies = [
 
 [[package]]
 name = "installateur-ln"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "crc32fast",
  "eframe",
